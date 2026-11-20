@@ -16,6 +16,7 @@ ns.FlashCD = FlashCD
 _G.FlashCD = FlashCD
 
 local GCD_MAX = 1.6
+local NO_BASE_MIN = 3.2   -- shortest real cooldown accepted when the base cooldown is unknown
 
 -- per-character settings; FlashCD.db points at the active table
 local DEFAULTS = {
@@ -161,6 +162,7 @@ local function SpellCooldown(key)
             if active ~= true then return false end
             if onGCD ~= nil and not IsSecret(onGCD) then
                 if onGCD == true then return false end
+                if d and d <= GCD_MAX then return false end
                 return true, d
             end
         end
@@ -391,14 +393,34 @@ local function ShouldFlash(key)
     return true
 end
 
+local cdSince = {}   -- [key] = GetTime() when it went on cooldown (0 = unknown)
+
+-- A short lockout (global cooldown, wand / auto-shot swing) can look like a
+-- cooldown, and in combat its length is hidden. So judge by how long the spell
+-- actually stayed on cooldown: past the GCD, and at least half its base cooldown.
+local function WasRealCooldown(key)
+    local since = cdSince[key]
+    if not since or since == 0 then return true end
+    local elapsed = GetTime() - since
+    if elapsed <= GCD_MAX + 0.2 then return false end
+    local base = BaseCooldown(key)
+    if base then return elapsed >= base * 0.5 end
+    -- no known base cooldown: a slow wand / ranged swing can last ~3 s
+    return elapsed > NO_BASE_MIN
+end
+
 local function Scan(silent)
     for key in pairs(FlashCD.db.spells) do
         local now, dur = IsOnCooldown(key)
         if now ~= nil then
-            if dur then lastDur[key] = dur end
-            if state[key] == true and now == false and not silent and ShouldFlash(key) then
+            if now == true and state[key] ~= true then
+                cdSince[key] = silent and 0 or GetTime()
+            end
+            if state[key] == true and now == false and not silent
+                and WasRealCooldown(key) and ShouldFlash(key) then
                 FlashCD.Flash(key)
             end
+            if dur then lastDur[key] = dur end
             state[key] = now
         end
     end
@@ -406,6 +428,7 @@ end
 
 function FlashCD.ResetState()
     wipe(state)
+    wipe(cdSince)
     Scan(true)
 end
 

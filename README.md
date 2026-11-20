@@ -42,3 +42,4 @@ Author: Skeide
 - This client hides cooldown times in combat. FlashCD reads the `isActive` / `isOnGCD` flags instead, which stay readable, so spell flashes work in combat.
 - Item cooldown times are hidden in combat too. An item used and recovered within one fight may not flash.
 - Spells with charges flash only when every charge is back.
+- Short lockouts (the global cooldown, wand and ranged shots) are not flashed. A spell must stay on cooldown for at least half its base cooldown, or more than about 3 seconds when the base cooldown is unknown.
