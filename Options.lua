@@ -132,6 +132,40 @@ local function MakeCycle(parent, prefix, list, get, set, w)
     return b
 end
 
+-- Labelled dropdown of {key, label} choices (the stock dropdown the game's own
+-- Settings use). Falls back to a cycle button where that template is missing.
+-- The label sits above the dropdown; position the returned frame by its TOPLEFT.
+local function MakeDropdown(parent, label, list, get, set, w)
+    local holder = CreateFrame("Frame", nil, parent)
+    holder:SetSize(w or 220, 40)
+
+    local title = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    title:SetPoint("TOPLEFT", 0, 0)
+    title:SetText(label)
+
+    local ok, dd = pcall(CreateFrame, "DropdownButton", nil, holder, "WowStyle1DropdownTemplate")
+    if ok and dd and dd.SetupMenu then
+        dd:SetWidth(w or 220)
+        dd:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
+        dd:SetupMenu(function(_, root)
+            for _, e in ipairs(list) do
+                root:CreateRadio(e.label,
+                    function() return get() == e.key end,
+                    function() set(e.key); holder:Refresh() end)
+            end
+        end)
+        holder.Refresh = function()
+            if dd.GenerateMenu then dd:GenerateMenu() end
+        end
+    else
+        if ok and dd then dd:Hide() end
+        local b = MakeCycle(holder, "", list, get, set, w)
+        b:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
+        holder.Refresh = function() b:Refresh() end
+    end
+    return holder
+end
+
 local function OpenColorPicker(c, apply)
     local r, g, b = c.r, c.g, c.b
     local function changed()
@@ -479,7 +513,7 @@ end
 
 local function BuildPopup()
     popup = MakeBackdropFrame(panel, "FlashCDSpellPopup")
-    popup:SetSize(290, 178)
+    popup:SetSize(290, 196)
     popup:SetFrameStrata("DIALOG")
     popup:SetToplevel(true)
     popup:EnableMouse(true)
@@ -513,7 +547,7 @@ local function BuildPopup()
 
     local soundList = { { key = nil, label = "Default" } }
     for _, s in ipairs(FlashCD.SOUNDS) do soundList[#soundList + 1] = s end
-    local sound = MakeCycle(popup, "Sound: ", soundList,
+    local sound = MakeDropdown(popup, "Sound", soundList,
         function() local e = Entry() return e and e.sound end,
         function(v)
             local e = Entry()
@@ -521,10 +555,10 @@ local function BuildPopup()
             FlashCD.PlaySound(v or DB().sound, true)
             changed()
         end, 262)
-    sound:SetPoint("TOPLEFT", 14, -84)
+    sound:SetPoint("TOPLEFT", 16, -80)
 
     local colourLabel = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    colourLabel:SetPoint("TOPLEFT", 16, -122)
+    colourLabel:SetPoint("TOPLEFT", 16, -138)
     colourLabel:SetText("Glow colour:")
 
     local swatch = MakeSwatch(popup,
@@ -611,15 +645,41 @@ local function BuildDisplayPage(page)
         FlashCD.Test()
     end)
 
-    local anim = Track(MakeCycle(page, "Animation: ", FlashCD.ANIMS,
+    StaticPopupDialogs = StaticPopupDialogs or {}
+    StaticPopupDialogs["FLASHCD_RESET"] = {
+        text = "Reset all FlashCD settings to their defaults?\n\nYour tracked spells and items are kept.",
+        button1 = YES or "Yes",
+        button2 = NO or "No",
+        OnAccept = function()
+            FlashCD.ResetSettings()
+            RefreshAll()
+        end,
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+    }
+
+    local resetBtn = MakeButton(page, "Reset to defaults", 140, 22)
+    resetBtn:SetPoint("LEFT", testBtn, "RIGHT", 8, 0)
+    resetBtn:SetScript("OnClick", function()
+        if StaticPopup_Show then
+            StaticPopup_Show("FLASHCD_RESET")
+        else
+            FlashCD.ResetSettings()
+            RefreshAll()
+        end
+    end)
+
+    local anim = Track(MakeDropdown(page, "Animation", FlashCD.ANIMS,
         function() return db().anim end,
         function(v) db().anim = v end))
-    anim:SetPoint("TOPLEFT", C1, -255)
+    anim:SetPoint("TOPLEFT", C1, -250)
 
-    local sound = Track(MakeCycle(page, "Sound: ", FlashCD.SOUNDS,
+    local sound = Track(MakeDropdown(page, "Sound", FlashCD.SOUNDS,
         function() return db().sound end,
         function(v) db().sound = v; FlashCD.PlaySound(v, true) end))
-    sound:SetPoint("TOPLEFT", C2, -255)
+    sound:SetPoint("TOPLEFT", C2, -250)
 
     local function Check(label, key, x, y)
         local c = Track(MakeCheck(page, label,
@@ -629,23 +689,23 @@ local function BuildDisplayPage(page)
         return c
     end
 
-    Check("Show name under the icon", "showName", C1, -292)
-    local glow = Check("Glow border", "glow", C2, -292)
+    Check("Show name under the icon", "showName", C1, -304)
+    local glow = Check("Glow border", "glow", C2, -304)
     local swatch = Track(MakeSwatch(page,
         function() return db().glowColor end,
         function(r, g, b) db().glowColor = { r = r, g = g, b = b } end))
     swatch:SetPoint("LEFT", glow.label, "RIGHT", 10, 0)
 
-    Check("Only flash while in combat", "combatOnly", C1, -322)
-    Check("Skip spells I can't cast now (wrong form)", "usableOnly", C2, -322)
+    Check("Only flash while in combat", "combatOnly", C1, -334)
+    Check("Skip spells I can't cast now (wrong form)", "usableOnly", C2, -334)
 
     local note = page:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    note:SetPoint("TOPLEFT", C1, -366)
+    note:SetPoint("TOPLEFT", C1, -378)
     note:SetWidth(560)
     note:SetJustifyH("LEFT")
     note:SetText("Settings and tracked spells are saved per character. A new character starts with the "
         .. "display settings of the last character you logged out on.\n"
-        .. "Left-click the Animation and Sound buttons for the next choice, right-click for the previous one.")
+        .. "Reset to defaults keeps your tracked spells and their own settings.")
 end
 
 local function BuildSpellsPage(page)

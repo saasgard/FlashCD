@@ -495,6 +495,15 @@ local function InitDB()
     FlashCD.db = db
 end
 
+-- Put every setting back to its default. Tracked spells (and their own
+-- sound / colour / mute) and the list of already-seen spells are kept.
+function FlashCD.ResetSettings()
+    local db = FlashCD.db
+    for _, k in ipairs(TEMPLATE_KEYS) do db[k] = CopyTable(DEFAULTS[k]) end
+    if FlashCD.unlocked then FlashCD.SetUnlocked(false) end
+    FlashCD.ApplyLayout()
+end
+
 local function SaveTemplate()
     local t = {}
     for _, k in ipairs(TEMPLATE_KEYS) do t[k] = CopyTable(FlashCD.db[k]) end
@@ -556,6 +565,10 @@ SlashCmdList.FLASHCD = function(msg)
         if FlashCD.OnPositionChanged then FlashCD.OnPositionChanged() end
     elseif msg == "test" then
         FlashCD.Test()
+    elseif msg == "reset" then
+        FlashCD.ResetSettings()
+        if FlashCD.OnPositionChanged then FlashCD.OnPositionChanged() end
+        print("|cff33ccffFlashCD|r: settings reset to defaults (tracked spells kept).")
     else
         if FlashCD.OpenOptions then FlashCD.OpenOptions() end
     end

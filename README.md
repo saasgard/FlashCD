@@ -24,6 +24,7 @@ Author: Skeide
 | `/flashcd` or `/fcd` | Open the options (Options → AddOns → FlashCD) |
 | `/flashcd unlock` | Show a box you can drag to move the flash; run it again to lock |
 | `/flashcd test` | Show a test flash |
+| `/flashcd reset` | Put all settings back to defaults (tracked spells are kept) |
 
 ## Files
 
