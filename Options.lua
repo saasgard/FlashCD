@@ -132,8 +132,21 @@ local function MakeCycle(parent, prefix, list, get, set, w)
     return b
 end
 
+-- Whether the game's controller (gamepad) interface is on. Under it the game's
+-- gamepad code takes every menu and shared window that opens into its focus
+-- and calls the protected SetPreferredGamepadInteractTarget; if addon code
+-- opened it, that call is blocked (ADDON_ACTION_FORBIDDEN). So under the
+-- controller interface FlashCD opens none of the game's menus or shared windows.
+local function GamepadUI()
+    local styles, api = Enum and Enum.InputDeviceInterfaceType, C_InputInterfaceStyle
+    if not (styles and api and api.GetCurrentStyle) then return false end
+    local ok, style = pcall(api.GetCurrentStyle)
+    return ok and style == styles.Gamepad
+end
+
 -- Labelled dropdown of {key, label} choices (the stock dropdown the game's own
--- Settings use). Falls back to a cycle button where that template is missing.
+-- Settings use). Under the controller interface, or where that template is
+-- missing, a cycle button is shown instead (see GamepadUI).
 -- The label sits above the dropdown; position the returned frame by its TOPLEFT.
 local function MakeDropdown(parent, label, list, get, set, w)
     local holder = CreateFrame("Frame", nil, parent)
@@ -142,6 +155,9 @@ local function MakeDropdown(parent, label, list, get, set, w)
     local title = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     title:SetPoint("TOPLEFT", 0, 0)
     title:SetText(label)
+
+    local b = MakeCycle(holder, "", list, get, set, w)
+    b:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
 
     local ok, dd = pcall(CreateFrame, "DropdownButton", nil, holder, "WowStyle1DropdownTemplate")
     if ok and dd and dd.SetupMenu then
@@ -154,16 +170,44 @@ local function MakeDropdown(parent, label, list, get, set, w)
                     function() set(e.key); holder:Refresh() end)
             end
         end)
-        holder.Refresh = function()
-            if dd.GenerateMenu then dd:GenerateMenu() end
-        end
     else
         if ok and dd then dd:Hide() end
-        local b = MakeCycle(holder, "", list, get, set, w)
-        b:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
-        holder.Refresh = function() b:Refresh() end
+        dd = nil
+    end
+
+    holder.Refresh = function()
+        local useMenu = dd ~= nil and not GamepadUI()
+        if dd then dd:SetShown(useMenu) end
+        b:SetShown(not useMenu)
+        if useMenu then
+            if dd.GenerateMenu then dd:GenerateMenu() end
+        else
+            b:Refresh()
+        end
     end
     return holder
+end
+
+-- Colours the swatch steps through under the controller interface
+local PRESET_COLOURS = {
+    { r = 1,    g = 0.82, b = 0 },     -- gold
+    { r = 1,    g = 1,    b = 1 },     -- white
+    { r = 1,    g = 0.2,  b = 0.2 },   -- red
+    { r = 1,    g = 0.5,  b = 0 },     -- orange
+    { r = 0.3,  g = 1,    b = 0.3 },   -- green
+    { r = 0.2,  g = 0.9,  b = 1 },     -- cyan
+    { r = 0.3,  g = 0.5,  b = 1 },     -- blue
+    { r = 0.7,  g = 0.3,  b = 1 },     -- purple
+    { r = 1,    g = 0.4,  b = 0.8 },   -- pink
+}
+
+local function NextPreset(c)
+    local best, bestD = 0, math.huge
+    for i, p in ipairs(PRESET_COLOURS) do
+        local d = (p.r - c.r) ^ 2 + (p.g - c.g) ^ 2 + (p.b - c.b) ^ 2
+        if d < bestD then best, bestD = i, d end
+    end
+    return PRESET_COLOURS[best % #PRESET_COLOURS + 1]
 end
 
 local function OpenColorPicker(c, apply)
@@ -203,11 +247,23 @@ local function MakeSwatch(parent, getColor, setColor)
         fill:SetColorTexture(c.r, c.g, c.b, 1)
     end
     b:SetScript("OnClick", function(self)
+        if GamepadUI() then
+            local p = NextPreset(getColor())
+            setColor(p.r, p.g, p.b)
+            self:Refresh()
+            return
+        end
         OpenColorPicker(getColor(), function(r, g, bl)
             setColor(r, g, bl)
             self:Refresh()
         end)
     end)
+    b:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(GamepadUI() and "Click for the next colour" or "Click to pick a colour")
+        GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
     return b
 end
 
@@ -645,31 +701,40 @@ local function BuildDisplayPage(page)
         FlashCD.Test()
     end)
 
-    StaticPopupDialogs = StaticPopupDialogs or {}
-    StaticPopupDialogs["FLASHCD_RESET"] = {
-        text = "Reset all FlashCD settings to their defaults?\n\nYour tracked spells and items are kept.",
-        button1 = YES or "Yes",
-        button2 = NO or "No",
-        OnAccept = function()
-            FlashCD.ResetSettings()
-            RefreshAll()
-        end,
-        timeout = 0,
-        whileDead = true,
-        hideOnEscape = true,
-        preferredIndex = 3,
-    }
+    -- Confirmation in a frame of our own. The game's shared StaticPopup
+    -- dialogs are not used: filling StaticPopupDialogs from an addon taints
+    -- them, and the controller interface's code then gets blocked
+    -- (SetPreferredGamepadInteractTarget, ADDON_ACTION_FORBIDDEN).
+    local confirm = MakeBackdropFrame(panel)
+    confirm:SetSize(320, 120)
+    confirm:SetPoint("CENTER", panel, "CENTER", 0, 40)
+    confirm:SetFrameStrata("DIALOG")
+    confirm:SetToplevel(true)
+    confirm:EnableMouse(true)
+    confirm:Hide()
+
+    local ctext = confirm:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    ctext:SetPoint("TOP", 0, -18)
+    ctext:SetWidth(290)
+    ctext:SetText("Reset all FlashCD settings to their defaults?\n\nYour tracked spells and items are kept.")
+
+    local yes = MakeButton(confirm, YES or "Yes", 100, 22)
+    yes:SetPoint("BOTTOMRIGHT", confirm, "BOTTOM", -6, 14)
+    yes:SetScript("OnClick", function()
+        confirm:Hide()
+        FlashCD.ResetSettings()
+        RefreshAll()
+    end)
+
+    local no = MakeButton(confirm, NO or "No", 100, 22)
+    no:SetPoint("BOTTOMLEFT", confirm, "BOTTOM", 6, 14)
+    no:SetScript("OnClick", function() confirm:Hide() end)
+
+    panel:HookScript("OnHide", function() confirm:Hide() end)
 
     local resetBtn = MakeButton(page, "Reset to defaults", 140, 22)
     resetBtn:SetPoint("LEFT", testBtn, "RIGHT", 8, 0)
-    resetBtn:SetScript("OnClick", function()
-        if StaticPopup_Show then
-            StaticPopup_Show("FLASHCD_RESET")
-        else
-            FlashCD.ResetSettings()
-            RefreshAll()
-        end
-    end)
+    resetBtn:SetScript("OnClick", function() confirm:Show() end)
 
     local anim = Track(MakeDropdown(page, "Animation", FlashCD.ANIMS,
         function() return db().anim end,
@@ -822,7 +887,7 @@ local function Build()
     ShowPage(1)
 
     panel:SetScript("OnShow", RefreshAll)
-    panel:SetScript("OnHide", function() if popup then popup:Hide() end end)
+    panel:HookScript("OnHide", function() if popup then popup:Hide() end end)
 
     if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory then
         category = Settings.RegisterCanvasLayoutCategory(panel, "FlashCD")
