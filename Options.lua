@@ -1,19 +1,21 @@
 -- FlashCD - Options.lua
--- Settings panel with two pages:
---   Display - size, position, fade, animation, sound, glow, filters
---   Spells  - pick spells (spellbook) or items to track; right-click a
---             tracked entry for its own sound / glow colour / mute.
+-- Settings panel with three pages:
+--   Appearance       - icon, effects and text, with a live preview
+--   Layout & alerts  - position, grow direction, sound, filters, minimap button
+--   Spells & items   - one list: tick to track; each tracked row has its own
+--                      mute, sound and glow colour
 
 local ADDON, ns = ...
 local FlashCD = ns.FlashCD
 
-local ROW_H = 24
-local LIST_W, LIST_H = 275, 320
+local ROW_H = 28
+local LIST_W, LIST_H = 576, 290
 
 local panel, category
-local bookList, trackList, searchBox, cdOnlyCheck, popup
-local source = "spells"          -- left list shows "spells" or "items"
+local spellList, searchBox, preview
 local refreshers = {}            -- widgets with :Refresh()
+local view = { show = "all", status = "all", sort = "name" }
+local spellTabs = {}             -- spellbook tab names seen in the last scan
 
 local function DB() return FlashCD.db end
 
@@ -29,6 +31,19 @@ end
 local function Track(w)
     refreshers[#refreshers + 1] = w
     return w
+end
+
+-- Tooltip with a title and a wrapped line of help
+local function Tip(frame, title, text)
+    if not frame or not text then return frame end
+    frame:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(title, 1, 1, 1)
+        GameTooltip:AddLine(text, nil, nil, nil, true)
+        GameTooltip:Show()
+    end)
+    frame:HookScript("OnLeave", function() GameTooltip:Hide() end)
+    return frame
 end
 
 local function MakeButton(parent, text, w, h)
@@ -57,10 +72,10 @@ local function MakeCheck(parent, label, get, set)
     return c
 end
 
-local function MakeSlider(parent, label, minV, maxV, step, fmt, get, set)
+local function MakeSlider(parent, label, minV, maxV, step, fmt, get, set, w)
     local s = CreateFrame("Slider", nil, parent)
     s:SetOrientation("HORIZONTAL")
-    s:SetSize(220, 16)
+    s:SetSize(w or 220, 16)
     s:SetMinMaxValues(minV, maxV)
     s:SetValueStep(step)
     if s.SetObeyStepOnDrag then s:SetObeyStepOnDrag(true) end
@@ -108,25 +123,31 @@ local function MakeSlider(parent, label, minV, maxV, step, fmt, get, set)
     return s
 end
 
--- Button that steps through a list of {key, label}. Left-click: next, right-click: previous.
+-- `list` is a table of {key, label} or a function returning one
+local function ListOf(list)
+    if type(list) == "function" then return list() end
+    return list
+end
+
+-- Button that steps through the choices. Left-click: next, right-click: previous.
 local function MakeCycle(parent, prefix, list, get, set, w)
     local b = MakeButton(parent, "", w or 220, 22)
     b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     b.Refresh = function(self)
-        local cur = get()
-        for _, e in ipairs(list) do
+        local cur, l = get(), ListOf(list)
+        for _, e in ipairs(l) do
             if e.key == cur then self:SetText(prefix .. e.label) return end
         end
-        self:SetText(prefix .. list[1].label)
+        self:SetText(prefix .. (l[1] and l[1].label or ""))
     end
     b:SetScript("OnClick", function(self, mouse)
-        local cur, idx = get(), 1
-        for i, e in ipairs(list) do
+        local cur, l, idx = get(), ListOf(list), 1
+        for i, e in ipairs(l) do
             if e.key == cur then idx = i break end
         end
         idx = idx + (mouse == "RightButton" and -1 or 1)
-        if idx > #list then idx = 1 elseif idx < 1 then idx = #list end
-        set(list[idx].key)
+        if idx > #l then idx = 1 elseif idx < 1 then idx = #l end
+        set(l[idx].key)
         self:Refresh()
     end)
     return b
@@ -144,32 +165,39 @@ local function GamepadUI()
     return ok and style == styles.Gamepad
 end
 
--- Labelled dropdown of {key, label} choices (the stock dropdown the game's own
--- Settings use). Under the controller interface, or where that template is
--- missing, a cycle button is shown instead (see GamepadUI).
--- The label sits above the dropdown; position the returned frame by its TOPLEFT.
+-- Dropdown of {key, label} choices (the stock dropdown the game's own Settings
+-- use). Under the controller interface, or where that template is missing, a
+-- cycle button is shown instead (see GamepadUI). With a label, the label sits
+-- above the dropdown. Position the returned frame by its TOPLEFT.
 local function MakeDropdown(parent, label, list, get, set, w)
     local holder = CreateFrame("Frame", nil, parent)
-    holder:SetSize(w or 220, 40)
+    holder:SetSize(w or 220, label and 44 or 26)
 
-    local title = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    title:SetPoint("TOPLEFT", 0, 0)
-    title:SetText(label)
+    local anchorTo, ax, ay = holder, 0, 0
+    if label then
+        local title = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        title:SetPoint("TOPLEFT", 0, 0)
+        title:SetText(label)
+        anchorTo, ay = title, -3
+    end
+    local point = label and "BOTTOMLEFT" or "TOPLEFT"
 
     local b = MakeCycle(holder, "", list, get, set, w)
-    b:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
+    b:SetPoint("TOPLEFT", anchorTo, point, ax, ay)
+    holder.button = b
 
     local ok, dd = pcall(CreateFrame, "DropdownButton", nil, holder, "WowStyle1DropdownTemplate")
     if ok and dd and dd.SetupMenu then
         dd:SetWidth(w or 220)
-        dd:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
+        dd:SetPoint("TOPLEFT", anchorTo, point, ax, ay)
         dd:SetupMenu(function(_, root)
-            for _, e in ipairs(list) do
+            for _, e in ipairs(ListOf(list)) do
                 root:CreateRadio(e.label,
                     function() return get() == e.key end,
                     function() set(e.key); holder:Refresh() end)
             end
         end)
+        holder.dd = dd
     else
         if ok and dd then dd:Hide() end
         dd = nil
@@ -184,6 +212,11 @@ local function MakeDropdown(parent, label, list, get, set, w)
         else
             b:Refresh()
         end
+    end
+    holder.SetTip = function(self, title, text)
+        Tip(b, title, text)
+        if dd then Tip(dd, title, text) end
+        return self
     end
     return holder
 end
@@ -232,10 +265,12 @@ local function OpenColorPicker(c, apply)
     ColorPickerFrame:SetFrameStrata("FULLSCREEN_DIALOG")
 end
 
--- Small colour square; getColor() returns {r,g,b}, setColor(r,g,b)
-local function MakeSwatch(parent, getColor, setColor)
+-- Small colour square; getColor() returns {r,g,b}, setColor(r,g,b).
+-- With onReset, right-click puts the colour back to its default.
+local function MakeSwatch(parent, getColor, setColor, onReset)
     local b = CreateFrame("Button", nil, parent)
     b:SetSize(22, 22)
+    b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     local border = b:CreateTexture(nil, "BACKGROUND")
     border:SetAllPoints()
     border:SetColorTexture(0.8, 0.8, 0.8, 1)
@@ -246,7 +281,11 @@ local function MakeSwatch(parent, getColor, setColor)
         local c = getColor()
         fill:SetColorTexture(c.r, c.g, c.b, 1)
     end
-    b:SetScript("OnClick", function(self)
+    b:SetScript("OnClick", function(self, mouse)
+        if mouse == "RightButton" then
+            if onReset then onReset() self:Refresh() end
+            return
+        end
         if GamepadUI() then
             local p = NextPreset(getColor())
             setColor(p.r, p.g, p.b)
@@ -260,7 +299,9 @@ local function MakeSwatch(parent, getColor, setColor)
     end)
     b:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText(GamepadUI() and "Click for the next colour" or "Click to pick a colour")
+        GameTooltip:SetText("Glow colour", 1, 1, 1)
+        GameTooltip:AddLine(GamepadUI() and "Click: next colour" or "Click: pick a colour")
+        if onReset then GameTooltip:AddLine("Right-click: use the default colour") end
         GameTooltip:Show()
     end)
     b:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -285,109 +326,23 @@ local function MakeBackdropFrame(parent, name)
     return f
 end
 
--- Scrollable list of rows. SetData({ {key, name, label, icon, id, itemID}, ... })
-local function MakeList(parent, titleText, buttonText, onButton, onRightClick)
-    local box = CreateFrame("Frame", nil, parent)
-    box:SetSize(LIST_W, LIST_H)
-
-    local bg = box:CreateTexture(nil, "BACKGROUND")
+-- A shaded box with a heading; place controls inside it
+local function MakeSection(parent, title, x, y, w, h)
+    local f = CreateFrame("Frame", nil, parent)
+    f:SetPoint("TOPLEFT", x, y)
+    f:SetSize(w, h)
+    local bg = f:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
-    bg:SetColorTexture(0, 0, 0, 0.35)
-
-    local title = box:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("BOTTOMLEFT", box, "TOPLEFT", 0, 4)
-    title:SetText(titleText)
-    box.title = title
-
-    local scroll = TryTemplate("ScrollFrame", box, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 4, -4)
-    scroll:SetPoint("BOTTOMRIGHT", -26, 4)
-    scroll:EnableMouseWheel(true)
-    scroll:SetScript("OnMouseWheel", function(self, delta)
-        local max = self:GetVerticalScrollRange()
-        local v = math.max(0, math.min(max, self:GetVerticalScroll() - delta * ROW_H * 3))
-        self:SetVerticalScroll(v)
-    end)
-
-    local content = CreateFrame("Frame", nil, scroll)
-    content:SetSize(LIST_W - 30, 1)
-    scroll:SetScrollChild(content)
-
-    local empty = box:CreateFontString(nil, "OVERLAY", "GameFontDisable")
-    empty:SetPoint("CENTER")
-
-    box.rows = {}
-
-    local function GetRow(i)
-        local r = box.rows[i]
-        if r then return r end
-        r = CreateFrame("Frame", nil, content)
-        r:SetSize(LIST_W - 30, ROW_H)
-        r:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
-        r:EnableMouse(true)
-
-        local hl = r:CreateTexture(nil, "HIGHLIGHT")
-        hl:SetAllPoints()
-        hl:SetColorTexture(1, 1, 1, 0.08)
-
-        r.icon = r:CreateTexture(nil, "ARTWORK")
-        r.icon:SetSize(ROW_H - 4, ROW_H - 4)
-        r.icon:SetPoint("LEFT", 2, 0)
-        r.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-
-        r.btn = MakeButton(r, buttonText, 60, ROW_H - 4)
-        r.btn:SetPoint("RIGHT", -2, 0)
-        r.btn:SetScript("OnClick", function() if r.key then onButton(r.key) end end)
-
-        r.text = r:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        r.text:SetPoint("LEFT", r.icon, "RIGHT", 6, 0)
-        r.text:SetPoint("RIGHT", r.btn, "LEFT", -4, 0)
-        r.text:SetJustifyH("LEFT")
-        r.text:SetWordWrap(false)
-
-        r:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            if self.itemID and GameTooltip.SetItemByID then
-                GameTooltip:SetItemByID(self.itemID)
-            elseif self.spellID and GameTooltip.SetSpellByID then
-                GameTooltip:SetSpellByID(self.spellID)
-            else
-                GameTooltip:SetText(self.text:GetText() or "")
-            end
-            if onRightClick then
-                GameTooltip:AddLine("Right-click: sound, glow colour, mute", 0.4, 0.8, 1)
-            end
-            GameTooltip:Show()
-        end)
-        r:SetScript("OnLeave", function() GameTooltip:Hide() end)
-        r:SetScript("OnMouseUp", function(self, mouse)
-            if mouse == "RightButton" and onRightClick and self.key then
-                onRightClick(self.key, self)
-            end
-        end)
-
-        box.rows[i] = r
-        return r
-    end
-
-    box.SetData = function(self, data, emptyText)
-        for i, d in ipairs(data) do
-            local r = GetRow(i)
-            r.spellID = d.id
-            r.itemID = d.itemID
-            r.key = d.key or d.name
-            r.icon:SetTexture(d.icon or 134400)
-            r.text:SetText(d.label or d.name or "?")
-            r:Show()
-        end
-        for i = #data + 1, #self.rows do self.rows[i]:Hide() end
-        content:SetHeight(math.max(1, #data * ROW_H))
-        empty:SetText(#data == 0 and (emptyText or "") or "")
-        local max = scroll:GetVerticalScrollRange()
-        if scroll:GetVerticalScroll() > max then scroll:SetVerticalScroll(max) end
-    end
-
-    return box
+    bg:SetColorTexture(1, 1, 1, 0.04)
+    local line = f:CreateTexture(nil, "BORDER")
+    line:SetPoint("TOPLEFT")
+    line:SetPoint("TOPRIGHT")
+    line:SetHeight(1)
+    line:SetColorTexture(1, 0.82, 0, 0.4)
+    local t = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    t:SetPoint("TOPLEFT", 10, -7)
+    t:SetText(title)
+    return f
 end
 
 ---------------------------------------------------------------------------
@@ -414,13 +369,13 @@ end
 function FlashCD.ScanSpellbook()
     -- one entry per spell name; a later (higher) rank replaces an earlier one
     local out, byName = {}, {}
-    local function add(id, name, icon)
+    local function add(id, name, icon, tab)
         if not id then return end
         name = name or FlashCD.GetSpellName(id)
         if not name then return end
         local entry = byName[name]
         if not entry then
-            entry = { name = name, key = name }
+            entry = { name = name, key = name, tab = tab }
             byName[name] = entry
             out[#out + 1] = entry
         end
@@ -439,18 +394,18 @@ function FlashCD.ScanSpellbook()
                     local ok, info = pcall(C_SpellBook.GetSpellBookItemInfo, j, bank)
                     if ok and info and info.spellID and not info.isPassive
                         and (spellType == nil or info.itemType == spellType) then
-                        add(info.spellID, info.name, info.iconID)
+                        add(info.spellID, info.name, info.iconID, line.name)
                     end
                 end
             end
         end
     elseif GetNumSpellTabs then
         for t = 1, GetNumSpellTabs() do
-            local _, _, offset, num = GetSpellTabInfo(t)
+            local tabName, _, offset, num = GetSpellTabInfo(t)
             for j = offset + 1, offset + num do
                 local kind, id = GetSpellBookItemInfo(j, BOOKTYPE_SPELL or "spell")
                 if kind == "SPELL" and id and not (IsPassiveSpell and IsPassiveSpell(id)) then
-                    add(id)
+                    add(id, nil, nil, tabName)
                 end
             end
         end
@@ -500,183 +455,374 @@ function FlashCD.ScanItems()
 end
 
 ---------------------------------------------------------------------------
--- Refresh
+-- The spell list: one row per spell or item, tick to track
 ---------------------------------------------------------------------------
-local function TrackedLabel(key, entry)
-    local name = tostring(FlashCD.KeyName(key))
-    local tags = {}
-    if entry.muted then tags[#tags + 1] = "muted" end
-    if entry.sound then tags[#tags + 1] = "sound" end
-    if entry.color then tags[#tags + 1] = "colour" end
-    if #tags == 0 then return name end
-    return name .. " |cff888888(" .. table.concat(tags, ", ") .. ")|r"
+local function Entry(key)
+    local e = key and DB().spells[key]
+    return type(e) == "table" and e or nil
 end
 
-local function RefreshLists()
-    if not panel then return end
-    local db = DB()
-    local filter = (searchBox and searchBox:GetText() or ""):lower()
+local function FormatCD(sec)
+    if not sec then return "" end
+    if sec < 60 then return string.format("%ds", sec) end
+    if sec < 3600 then
+        local m = sec / 60
+        return (m == math.floor(m)) and string.format("%dm", m) or string.format("%.1fm", m)
+    end
+    return string.format("%.1fh", sec / 3600)
+end
 
-    local data = source == "items" and FlashCD.ScanItems() or FlashCD.ScanSpellbook()
-    local book = {}
-    for _, d in ipairs(data) do
-        local nameOk = filter == "" or (d.name and tostring(d.name):lower():find(filter, 1, true))
-        local cdOk = source == "items" or not db.cdOnly or FlashCD.HasCooldown(d.id)
-        if db.spells[d.key] == nil and nameOk and cdOk then
-            book[#book + 1] = d
+local SOUND_CHOICES = { { key = nil, label = "Default sound" } }
+for _, s in ipairs(FlashCD.SOUNDS) do SOUND_CHOICES[#SOUND_CHOICES + 1] = s end
+
+local RefreshList   -- defined below
+
+local function MakeSpellList(parent)
+    local box = CreateFrame("Frame", nil, parent)
+    box:SetSize(LIST_W, LIST_H)
+
+    local bg = box:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(0, 0, 0, 0.35)
+
+    -- column headings
+    local function Head(text, x)
+        local fs = box:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        fs:SetPoint("BOTTOMLEFT", box, "TOPLEFT", x, 3)
+        fs:SetText(text)
+    end
+    Head("Track", 4)
+    Head("Spell", 62)
+    Head("Cooldown", 236)
+    Head("Mute", 290)
+    Head("Sound", 350)
+    Head("Glow", 466)
+
+    local scroll = TryTemplate("ScrollFrame", box, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", 4, -4)
+    scroll:SetPoint("BOTTOMRIGHT", -26, 4)
+    scroll:EnableMouseWheel(true)
+    scroll:SetScript("OnMouseWheel", function(self, delta)
+        local max = self:GetVerticalScrollRange()
+        local v = math.max(0, math.min(max, self:GetVerticalScroll() - delta * ROW_H * 3))
+        self:SetVerticalScroll(v)
+    end)
+
+    local content = CreateFrame("Frame", nil, scroll)
+    content:SetSize(LIST_W - 30, 1)
+    scroll:SetScrollChild(content)
+
+    local empty = box:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+    empty:SetPoint("CENTER")
+
+    box.rows = {}
+
+    local function GetRow(i)
+        local r = box.rows[i]
+        if r then return r end
+        r = CreateFrame("Frame", nil, content)
+        r:SetSize(LIST_W - 30, ROW_H)
+        r:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
+        r:EnableMouse(true)
+
+        local stripe = r:CreateTexture(nil, "BACKGROUND")
+        stripe:SetAllPoints()
+        stripe:SetColorTexture(1, 1, 1, (i % 2 == 0) and 0.03 or 0)
+        local hl = r:CreateTexture(nil, "HIGHLIGHT")
+        hl:SetAllPoints()
+        hl:SetColorTexture(1, 1, 1, 0.08)
+
+        r.check = MakeCheck(r, "",
+            function() return DB().spells[r.key] ~= nil end,
+            function(v)
+                if not r.key then return end
+                if v then FlashCD.TrackKey(r.key) else FlashCD.UntrackKey(r.key) end
+                RefreshList()
+            end)
+        r.check:SetPoint("LEFT", 2, 0)
+
+        r.icon = r:CreateTexture(nil, "ARTWORK")
+        r.icon:SetSize(ROW_H - 6, ROW_H - 6)
+        r.icon:SetPoint("LEFT", 30, 0)
+        r.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+
+        r.text = r:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        r.text:SetPoint("LEFT", 58, 0)
+        r.text:SetWidth(170)
+        r.text:SetJustifyH("LEFT")
+        r.text:SetWordWrap(false)
+
+        r.cd = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        r.cd:SetPoint("LEFT", 232, 0)
+        r.cd:SetWidth(50)
+        r.cd:SetJustifyH("LEFT")
+        r.cd:SetTextColor(0.7, 0.7, 0.7)
+
+        r.mute = MakeCheck(r, "",
+            function() local e = Entry(r.key) return e and e.muted end,
+            function(v) local e = Entry(r.key) if e then e.muted = v or nil end RefreshList() end)
+        r.mute:SetPoint("LEFT", 288, 0)
+        Tip(r.mute, "Mute", "Keep it tracked, but never flash it.")
+
+        r.sound = MakeDropdown(r, nil, SOUND_CHOICES,
+            function() local e = Entry(r.key) return e and e.sound end,
+            function(v)
+                local e = Entry(r.key)
+                if e then e.sound = v end
+                FlashCD.PlaySound(v or DB().sound, true)
+            end, 110)
+        r.sound:SetPoint("LEFT", 318, 0)
+        r.sound:SetTip("Sound", "A sound just for this one. \"Default sound\" uses the sound set on the Layout & alerts page.")
+
+        r.swatch = MakeSwatch(r,
+            function() local e = Entry(r.key) return (e and e.color) or DB().glowColor end,
+            function(cr, cg, cb) local e = Entry(r.key) if e then e.color = { r = cr, g = cg, b = cb } end end,
+            function() local e = Entry(r.key) if e then e.color = nil end end)
+        r.swatch:SetPoint("LEFT", 466, 0)
+
+        r.test = MakeButton(r, "Test", 48, ROW_H - 6)
+        r.test:SetPoint("LEFT", 496, 0)
+        r.test:SetScript("OnClick", function() if r.key then FlashCD.Flash(r.key) end end)
+
+        r:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            if self.itemID and GameTooltip.SetItemByID then
+                GameTooltip:SetItemByID(self.itemID)
+            elseif self.spellID and GameTooltip.SetSpellByID then
+                GameTooltip:SetSpellByID(self.spellID)
+            else
+                GameTooltip:SetText(self.text:GetText() or "")
+            end
+            GameTooltip:Show()
+        end)
+        r:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+        box.rows[i] = r
+        return r
+    end
+
+    box.SetData = function(self, data, emptyText)
+        for i, d in ipairs(data) do
+            local r = GetRow(i)
+            r.key = d.key
+            r.spellID = d.id
+            r.itemID = d.itemID
+            r.icon:SetTexture(d.icon or 134400)
+            r.icon:SetDesaturated(not d.tracked)
+            r.text:SetText(d.name or "?")
+            if d.tracked then r.text:SetTextColor(1, 1, 1) else r.text:SetTextColor(0.55, 0.55, 0.55) end
+            r.cd:SetText(FormatCD(d.cd))
+            r.check:Refresh()
+            r.mute:SetShown(d.tracked)
+            r.sound:SetShown(d.tracked)
+            r.swatch:SetShown(d.tracked)
+            if d.tracked then
+                r.mute:Refresh()
+                r.sound:Refresh()
+                r.swatch:Refresh()
+            end
+            r:Show()
+        end
+        for i = #data + 1, #self.rows do self.rows[i]:Hide() end
+        content:SetHeight(math.max(1, #data * ROW_H))
+        empty:SetText(#data == 0 and (emptyText or "") or "")
+        local max = scroll:GetVerticalScrollRange()
+        if scroll:GetVerticalScroll() > max then scroll:SetVerticalScroll(max) end
+    end
+
+    return box
+end
+
+-- Rows for the current view: the spellbook (all or one tab) or items,
+-- plus anything tracked that isn't there any more, so it can be unticked
+local function BuildRows()
+    local db = DB()
+    local rows, seen = {}, {}
+    local function add(d)
+        if seen[d.key] then return end
+        seen[d.key] = true
+        rows[#rows + 1] = d
+    end
+
+    if view.show == "items" then
+        for _, d in ipairs(FlashCD.ScanItems()) do add(d) end
+        for key in pairs(db.spells) do
+            local item = FlashCD.ItemID(key)
+            if item then
+                add({ key = key, itemID = item, name = tostring(FlashCD.KeyName(key)), icon = FlashCD.KeyIcon(key) })
+            end
+        end
+    else
+        wipe(spellTabs)
+        local tabSeen = {}
+        local wantTab = view.show:match("^tab:(.*)$")
+        for _, d in ipairs(FlashCD.ScanSpellbook()) do
+            if d.tab and not tabSeen[d.tab] then
+                tabSeen[d.tab] = true
+                spellTabs[#spellTabs + 1] = d.tab
+            end
+            if (not wantTab or d.tab == wantTab)
+                and (db.spells[d.key] ~= nil or not db.cdOnly or FlashCD.HasCooldown(d.id)) then
+                add(d)
+            end
+        end
+        if wantTab and not tabSeen[wantTab] then view.show = "all" end
+        if not wantTab then
+            for key in pairs(db.spells) do
+                if not FlashCD.ItemID(key) then
+                    add({ key = key, id = FlashCD.GetSpellID(key), name = tostring(FlashCD.KeyName(key)), icon = FlashCD.KeyIcon(key) })
+                end
+            end
         end
     end
-    bookList.title:SetText(source == "items" and "Usable items (equipped and bags)" or "Spellbook")
-    bookList:SetData(book, source == "items" and "No usable items found" or "No matching spells")
-    cdOnlyCheck:SetShown(source ~= "items")
 
-    local tracked = {}
-    for key, entry in pairs(db.spells) do
-        local item = FlashCD.ItemID(key)
-        tracked[#tracked + 1] = {
-            key = key,
-            itemID = item,
-            id = (not item) and (type(key) == "number" and key or FlashCD.GetSpellID(key)) or nil,
-            name = tostring(FlashCD.KeyName(key)),
-            label = TrackedLabel(key, type(entry) == "table" and entry or {}),
-            icon = FlashCD.KeyIcon(key),
-        }
+    local filter = (searchBox and searchBox:GetText() or ""):lower()
+    local out = {}
+    for _, d in ipairs(rows) do
+        d.tracked = db.spells[d.key] ~= nil
+        if not d.itemID then d.cd = FlashCD.BaseCooldown(d.key) end
+        local nameOk = filter == "" or tostring(d.name or ""):lower():find(filter, 1, true)
+        local statusOk = view.status == "all"
+            or (view.status == "tracked") == d.tracked
+        if nameOk and statusOk then out[#out + 1] = d end
     end
-    trackList:SetData(SortByName(tracked), "Add spells or items from the left list")
+
+    table.sort(out, function(a, b)
+        if view.sort == "cooldown" and (a.cd or 0) ~= (b.cd or 0) then
+            return (a.cd or 0) > (b.cd or 0)
+        elseif view.sort == "tracked" and a.tracked ~= b.tracked then
+            return a.tracked
+        end
+        return tostring(a.name or "") < tostring(b.name or "")
+    end)
+    return out
+end
+
+local shownRows = {}
+
+RefreshList = function()
+    if not panel or not spellList then return end
+    shownRows = BuildRows()
+    local emptyText = view.show == "items" and "No usable items found" or "No matching spells"
+    spellList:SetData(shownRows, emptyText)
+end
+
+---------------------------------------------------------------------------
+-- Refresh
+---------------------------------------------------------------------------
+local function UpdatePreview()
+    if not preview then return end
+    local key
+    for k in pairs(DB().spells) do
+        if not key or tostring(k) < tostring(key) then key = k end
+    end
+    if not key and FlashCD.ScanSpellbook then
+        local book = FlashCD.ScanSpellbook()
+        key = book[1] and book[1].key
+    end
+    preview:SetShown(key ~= nil)
+    if key then preview:Update(key, 64) end
 end
 
 local function RefreshAll()
     if not panel then return end
     for _, w in ipairs(refreshers) do w:Refresh() end
-    RefreshLists()
+    UpdatePreview()
+    RefreshList()
 end
 
 FlashCD.OnTrackedChanged = function()
-    if panel and panel:IsShown() then RefreshLists() end
+    if panel and panel:IsShown() then RefreshList() end
 end
 
 FlashCD.OnPositionChanged = function()
     if panel then for _, w in ipairs(refreshers) do w:Refresh() end end
 end
 
----------------------------------------------------------------------------
--- Per-spell popup (right-click a tracked entry)
----------------------------------------------------------------------------
-local function Entry()
-    local e = popup and popup.key and DB().spells[popup.key]
-    return type(e) == "table" and e or nil
-end
-
-local function BuildPopup()
-    popup = MakeBackdropFrame(panel, "FlashCDSpellPopup")
-    popup:SetSize(290, 196)
-    popup:SetFrameStrata("DIALOG")
-    popup:SetToplevel(true)
-    popup:EnableMouse(true)
-    popup:Hide()
-
-    popup.icon = popup:CreateTexture(nil, "ARTWORK")
-    popup.icon:SetSize(28, 28)
-    popup.icon:SetPoint("TOPLEFT", 14, -14)
-    popup.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-
-    popup.title = popup:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    popup.title:SetPoint("LEFT", popup.icon, "RIGHT", 8, 0)
-    popup.title:SetPoint("RIGHT", -34, 0)
-    popup.title:SetJustifyH("LEFT")
-    popup.title:SetWordWrap(false)
-
-    local close = TryTemplate("Button", popup, "UIPanelCloseButton")
-    close:SetSize(28, 28)
-    close:SetPoint("TOPRIGHT", -4, -4)
-    close:SetScript("OnClick", function() popup:Hide() end)
-
-    local function changed()
-        RefreshLists()
-        popup:Refresh()
-    end
-
-    local mute = MakeCheck(popup, "Mute (keep tracked, never flash)",
-        function() local e = Entry() return e and e.muted end,
-        function(v) local e = Entry() if e then e.muted = v or nil end changed() end)
-    mute:SetPoint("TOPLEFT", 12, -52)
-
-    local soundList = { { key = nil, label = "Default" } }
-    for _, s in ipairs(FlashCD.SOUNDS) do soundList[#soundList + 1] = s end
-    local sound = MakeDropdown(popup, "Sound", soundList,
-        function() local e = Entry() return e and e.sound end,
-        function(v)
-            local e = Entry()
-            if e then e.sound = v end
-            FlashCD.PlaySound(v or DB().sound, true)
-            changed()
-        end, 262)
-    sound:SetPoint("TOPLEFT", 16, -80)
-
-    local colourLabel = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    colourLabel:SetPoint("TOPLEFT", 16, -138)
-    colourLabel:SetText("Glow colour:")
-
-    local swatch = MakeSwatch(popup,
-        function() local e = Entry() return (e and e.color) or DB().glowColor end,
-        function(r, g, b) local e = Entry() if e then e.color = { r = r, g = g, b = b } end changed() end)
-    swatch:SetPoint("LEFT", colourLabel, "RIGHT", 8, 0)
-
-    local reset = MakeButton(popup, "Use default", 100, 22)
-    reset:SetPoint("LEFT", swatch, "RIGHT", 10, 0)
-    reset:SetScript("OnClick", function() local e = Entry() if e then e.color = nil end changed() end)
-
-    local test = MakeButton(popup, "Test", 80, 22)
-    test:SetPoint("BOTTOMRIGHT", -12, 12)
-    test:SetScript("OnClick", function() if popup.key then FlashCD.Flash(popup.key) end end)
-
-    popup.Refresh = function(self)
-        if not Entry() then self:Hide() return end
-        self.icon:SetTexture(FlashCD.KeyIcon(self.key) or 134400)
-        self.title:SetText(FlashCD.KeyName(self.key))
-        mute:Refresh()
-        sound:Refresh()
-        swatch:Refresh()
-        reset:SetEnabled(Entry().color ~= nil)
-    end
-end
-
-local function OpenPopup(key, row)
-    if not popup then BuildPopup() end
-    popup.key = key
-    popup:ClearAllPoints()
-    popup:SetPoint("TOPRIGHT", row, "TOPLEFT", -8, 0)
-    popup:Show()
-    popup:Refresh()
+-- After a display setting changes: move the flashes, redraw the preview
+local function Changed()
+    FlashCD.ApplyLayout()
+    UpdatePreview()
 end
 
 ---------------------------------------------------------------------------
 -- Pages
 ---------------------------------------------------------------------------
-local function BuildDisplayPage(page)
+local C1, C2, COL_W = 16, 306, 280
+
+local function Slider(parent, label, minV, maxV, step, fmt, key, y, tip)
+    local db = DB
+    local s = Track(MakeSlider(parent, label, minV, maxV, step, fmt,
+        function() return db()[key] end,
+        function(v) db()[key] = v; Changed() end, COL_W - 36))
+    s:SetPoint("TOPLEFT", 16, y)
+    Tip(s, label, tip)
+    return s
+end
+
+local function Check(parent, label, key, y, tip)
+    local db = DB
+    local c = Track(MakeCheck(parent, label,
+        function() return db()[key] end,
+        function(v) db()[key] = v; Changed() end))
+    c:SetPoint("TOPLEFT", 10, y)
+    Tip(c, label, tip)
+    return c
+end
+
+local function Dropdown(parent, label, list, key, y, tip, after)
+    local db = DB
+    local d = Track(MakeDropdown(parent, label, list,
+        function() return db()[key] end,
+        function(v) db()[key] = v; Changed(); if after then after(v) end end, COL_W - 36))
+    d:SetPoint("TOPLEFT", 16, y)
+    d:SetTip(label, tip)
+    return d
+end
+
+local function BuildAppearancePage(page)
+    local db = DB
+
+    local icon = MakeSection(page, "Icon", C1, -8, COL_W, 176)
+    Slider(icon, "Size", 24, 300, 2, "%d", "size", -44, "How big the flash is, in pixels.")
+    Slider(icon, "Opacity", 0.1, 1, 0.05, "%.2f", "alpha", -90, "How see-through the flash is at its brightest.")
+    Slider(icon, "Fade-out time (seconds)", 0.3, 3, 0.1, "%.1f", "duration", -136, "How long the flash stays on screen while it fades out.")
+
+    local pv = MakeSection(page, "Preview", C2, -8, COL_W, 176)
+    preview = FlashCD.NewPreview(pv)
+    preview:SetPoint("CENTER", pv, "CENTER", 0, -4)
+
+    local fx = MakeSection(page, "Effects", C1, -192, COL_W, 180)
+    Dropdown(fx, "Animation", FlashCD.ANIMS, "anim", -30,
+        "Pop: grows a little, then settles. Zoom: grows as it fades. Bounce: bounces a few times. Slide in: rises into place. Plain fade: just fades.")
+    local glow = Check(fx, "Glow border", "glow", -84, "A coloured glow around the icon. Each spell can have its own colour on the Spells & items page.")
+    local swatch = Track(MakeSwatch(fx,
+        function() return db().glowColor end,
+        function(r, g, b) db().glowColor = { r = r, g = g, b = b }; Changed() end,
+        function() db().glowColor = { r = 1, g = 0.82, b = 0 }; Changed() end))
+    swatch:SetPoint("LEFT", glow.label, "RIGHT", 10, 0)
+    Check(fx, "Shine burst", "shine", -112, "A bright star that bursts over the icon as it appears.")
+
+    local tx = MakeSection(page, "Text", C2, -192, COL_W, 180)
+    Check(tx, "Show the name under the icon", "showName", -30)
+    Check(tx, "Show \"Ready!\" above the icon", "readyText", -56)
+    Slider(tx, "Font size", 8, 32, 1, "%d", "fontSize", -100, "Size of the name and the \"Ready!\" text.")
+    Dropdown(tx, "Outline", FlashCD.OUTLINES, "fontOutline", -124, "A dark edge around the text, so it reads on bright backgrounds.")
+end
+
+local function BuildLayoutPage(page)
     local db = DB
     local w = math.floor(GetScreenWidth() / 2)
     local h = math.floor(GetScreenHeight() / 2)
-    local C1, C2 = 20, 320
 
-    local function Slider(label, minV, maxV, step, fmt, key, x, y, after)
-        local s = Track(MakeSlider(page, label, minV, maxV, step, fmt,
-            function() return db()[key] end,
-            function(v) db()[key] = v; if after then after() end end))
-        s:SetPoint("TOPLEFT", x, y)
-        return s
-    end
+    local pos = MakeSection(page, "Position", C1, -8, COL_W, 246)
+    Slider(pos, "Horizontal position (X)", -w, w, 1, "%d", "x", -44, "Distance from the middle of the screen. You can also drag the flash: click Unlock.")
+    Slider(pos, "Vertical position (Y)", -h, h, 1, "%d", "y", -90)
+    Slider(pos, "Icons at once (max)", 1, 8, 1, "%d", "maxIcons", -136, "How many flashes can show together when several spells come ready at the same time.")
+    Dropdown(pos, "When several show at once", FlashCD.GROWS, "grow", -160, "Which way the row of icons grows from the flash position.")
 
-    Slider("Icon size", 24, 300, 2, "%d", "size", C1, -30, FlashCD.ApplyLayout)
-    Slider("Fade-out time (seconds)", 0.3, 3, 0.1, "%.1f", "duration", C2, -30)
-    Slider("Horizontal position (X)", -w, w, 1, "%d", "x", C1, -80, FlashCD.ApplyLayout)
-    Slider("Vertical position (Y)", -h, h, 1, "%d", "y", C2, -80, FlashCD.ApplyLayout)
-    Slider("Opacity", 0.1, 1, 0.05, "%.2f", "alpha", C1, -130)
-    Slider("Icons side by side (max)", 1, 8, 1, "%d", "maxIcons", C2, -130)
-    Slider("Minimum cooldown to flash (seconds, 0 = off)", 0, 120, 1, "%d", "minCD", C1, -180)
-
-    local lockBtn = MakeButton(page, "Unlock (drag)", 120, 22)
-    lockBtn:SetPoint("TOPLEFT", C1, -215)
+    local lockBtn = MakeButton(pos, "Unlock (drag)", 120, 22)
+    lockBtn:SetPoint("TOPLEFT", 16, -212)
     lockBtn.Refresh = function(self)
         self:SetText(FlashCD.IsUnlocked() and "Lock" or "Unlock (drag)")
     end
@@ -685,8 +831,9 @@ local function BuildDisplayPage(page)
         RefreshAll()
     end)
     Track(lockBtn)
+    Tip(lockBtn, "Unlock", "Shows a box you can drag to move the flash. Click again to lock it.")
 
-    local centerBtn = MakeButton(page, "Center", 80, 22)
+    local centerBtn = MakeButton(pos, "Center", 80, 22)
     centerBtn:SetPoint("LEFT", lockBtn, "RIGHT", 8, 0)
     centerBtn:SetScript("OnClick", function()
         db().point, db().x, db().y = "CENTER", 0, 0
@@ -694,8 +841,27 @@ local function BuildDisplayPage(page)
         RefreshAll()
     end)
 
-    local testBtn = MakeButton(page, "Test flash", 100, 22)
-    testBtn:SetPoint("LEFT", centerBtn, "RIGHT", 8, 0)
+    local snd = MakeSection(page, "Sound and button", C2, -8, COL_W, 112)
+    Dropdown(snd, "Sound", FlashCD.SOUNDS, "sound", -30, "Played when something flashes (once, even if several flash together).",
+        function(v) FlashCD.PlaySound(v, true) end)
+    local mm = Track(MakeCheck(snd, "Show the minimap button",
+        function() return not db().minimap.hide end,
+        function(v)
+            db().minimap.hide = not v
+            if FlashCD.UpdateMinimapButton then FlashCD.UpdateMinimapButton() end
+        end))
+    mm:SetPoint("TOPLEFT", 10, -82)
+    Tip(mm, "Minimap button", "Left-click opens these options, right-click shows a test flash. Drag it to move it around the minimap.")
+
+    local when = MakeSection(page, "When to flash", C2, -128, COL_W, 126)
+    Check(when, "Only while in combat", "combatOnly", -30)
+    Check(when, "Skip spells I can't cast now", "usableOnly", -56,
+        "Don't flash a spell your current form or stance can't use. Lack of mana, rage or energy doesn't count.")
+    Slider(when, "Minimum cooldown (seconds, 0 = off)", 0, 120, 1, "%d", "minCD", -100,
+        "Don't flash spells with a shorter cooldown than this.")
+
+    local testBtn = MakeButton(page, "Test flash", 120, 22)
+    testBtn:SetPoint("TOPLEFT", C1, -266)
     testBtn:SetScript("OnClick", function()
         if FlashCD.IsUnlocked() then FlashCD.SetUnlocked(false); RefreshAll() end
         FlashCD.Test()
@@ -735,109 +901,100 @@ local function BuildDisplayPage(page)
     local resetBtn = MakeButton(page, "Reset to defaults", 140, 22)
     resetBtn:SetPoint("LEFT", testBtn, "RIGHT", 8, 0)
     resetBtn:SetScript("OnClick", function() confirm:Show() end)
-
-    local anim = Track(MakeDropdown(page, "Animation", FlashCD.ANIMS,
-        function() return db().anim end,
-        function(v) db().anim = v end))
-    anim:SetPoint("TOPLEFT", C1, -250)
-
-    local sound = Track(MakeDropdown(page, "Sound", FlashCD.SOUNDS,
-        function() return db().sound end,
-        function(v) db().sound = v; FlashCD.PlaySound(v, true) end))
-    sound:SetPoint("TOPLEFT", C2, -250)
-
-    local function Check(label, key, x, y)
-        local c = Track(MakeCheck(page, label,
-            function() return db()[key] end,
-            function(v) db()[key] = v end))
-        c:SetPoint("TOPLEFT", x - 4, y)
-        return c
-    end
-
-    Check("Show name under the icon", "showName", C1, -304)
-    local glow = Check("Glow border", "glow", C2, -304)
-    local swatch = Track(MakeSwatch(page,
-        function() return db().glowColor end,
-        function(r, g, b) db().glowColor = { r = r, g = g, b = b } end))
-    swatch:SetPoint("LEFT", glow.label, "RIGHT", 10, 0)
-
-    Check("Only flash while in combat", "combatOnly", C1, -334)
-    Check("Skip spells I can't cast now (wrong form)", "usableOnly", C2, -334)
+    Tip(resetBtn, "Reset to defaults", "Puts every setting on all pages back to its default. Tracked spells and their own settings are kept.")
 
     local note = page:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    note:SetPoint("TOPLEFT", C1, -378)
-    note:SetWidth(560)
+    note:SetPoint("TOPLEFT", C1, -300)
+    note:SetWidth(COL_W * 2 + 10)
     note:SetJustifyH("LEFT")
     note:SetText("Settings and tracked spells are saved per character. A new character starts with the "
-        .. "display settings of the last character you logged out on.\n"
-        .. "Reset to defaults keeps your tracked spells and their own settings.")
+        .. "settings of the last character you logged out on.")
 end
 
 local function BuildSpellsPage(page)
     local db = DB
 
-    bookList = MakeList(page, "Spellbook", "Add", function(key)
-        FlashCD.TrackKey(key)
-        RefreshLists()
-    end)
-    bookList:SetPoint("TOPLEFT", 16, -96)
-
-    trackList = MakeList(page, "Tracked", "Remove", function(key)
-        FlashCD.UntrackKey(key)
-        if popup and popup.key == key then popup:Hide() end
-        RefreshLists()
-    end, OpenPopup)
-    trackList:SetPoint("TOPLEFT", bookList, "TOPRIGHT", 20, 0)
-
-    -- source switch
-    local spellsBtn = MakeButton(page, "Spellbook", 100, 22)
-    spellsBtn:SetPoint("TOPLEFT", 16, -8)
-    local itemsBtn = MakeButton(page, "Items", 100, 22)
-    itemsBtn:SetPoint("LEFT", spellsBtn, "RIGHT", 6, 0)
-    local function SetSource(s)
-        source = s
-        spellsBtn:SetEnabled(s ~= "spells")
-        itemsBtn:SetEnabled(s ~= "items")
-        RefreshLists()
+    local function ShowChoices()
+        local l = { { key = "all", label = "All spells" } }
+        for _, t in ipairs(spellTabs) do l[#l + 1] = { key = "tab:" .. t, label = t } end
+        l[#l + 1] = { key = "items", label = "Items (equipped and bags)" }
+        return l
     end
-    spellsBtn:SetScript("OnClick", function() SetSource("spells") end)
-    itemsBtn:SetScript("OnClick", function() SetSource("items") end)
-    spellsBtn:SetEnabled(false)
+
+    local function ViewDropdown(label, list, field, x, w, tip)
+        local d = Track(MakeDropdown(page, label, list,
+            function() return view[field] end,
+            function(v) view[field] = v; RefreshList() end, w))
+        d:SetPoint("TOPLEFT", x, -6)
+        d:SetTip(label, tip)
+        return d
+    end
+    ViewDropdown("Show", ShowChoices, "show", 16, 180, "All spells, one spellbook tab, or items with a \"Use:\" effect.")
+    ViewDropdown("Status", {
+        { key = "all", label = "Everything" },
+        { key = "tracked", label = "Tracked" },
+        { key = "untracked", label = "Not tracked" },
+    }, "status", 204, 130)
+    ViewDropdown("Sort by", {
+        { key = "name", label = "Name" },
+        { key = "cooldown", label = "Cooldown (longest)" },
+        { key = "tracked", label = "Tracked first" },
+    }, "sort", 342, 130)
 
     searchBox = TryTemplate("EditBox", page, "SearchBoxTemplate")
     if not searchBox.Instructions then
         searchBox:Hide()
         searchBox = TryTemplate("EditBox", page, "InputBoxTemplate")
     end
-    searchBox:SetSize(150, 20)
+    searchBox:SetSize(106, 20)
     searchBox:SetAutoFocus(false)
-    searchBox:SetPoint("BOTTOMRIGHT", bookList, "TOPRIGHT", 0, 2)
-    searchBox:HookScript("OnTextChanged", function() RefreshLists() end)
+    searchBox:SetPoint("TOPLEFT", 484, -24)
+    searchBox:HookScript("OnTextChanged", function() RefreshList() end)
     searchBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 
-    cdOnlyCheck = Track(MakeCheck(page, "Only spells with a cooldown",
+    local cdOnly = Track(MakeCheck(page, "Hide spells without a cooldown",
         function() return db().cdOnly end,
-        function(v) db().cdOnly = v; RefreshLists() end))
-    cdOnlyCheck:SetPoint("BOTTOMLEFT", bookList, "TOPLEFT", -4, 26)
+        function(v) db().cdOnly = v; RefreshList() end))
+    cdOnly:SetPoint("TOPLEFT", 12, -54)
 
-    local autoCheck = Track(MakeCheck(page, "Auto-track newly learned spells",
+    local auto = Track(MakeCheck(page, "Auto-track new spells",
         function() return db().autoTrack end,
         function(v) db().autoTrack = v end))
-    autoCheck:SetPoint("BOTTOMLEFT", trackList, "TOPLEFT", -4, 26)
+    auto:SetPoint("TOPLEFT", 222, -54)
+    Tip(auto, "Auto-track new spells", "Spells with a cooldown are ticked when you learn them. A spell you untick stays unticked, also when you learn a new rank.")
+
+    local function SetAll(on)
+        for _, d in ipairs(shownRows) do
+            if on and DB().spells[d.key] == nil then FlashCD.TrackKey(d.key)
+            elseif not on and DB().spells[d.key] ~= nil then FlashCD.UntrackKey(d.key) end
+        end
+        RefreshList()
+    end
+    local allOn = MakeButton(page, "Track all", 80, 22)
+    allOn:SetPoint("TOPLEFT", 420, -55)
+    allOn:SetScript("OnClick", function() SetAll(true) end)
+    Tip(allOn, "Track all", "Ticks every spell shown in the list below.")
+    local allOff = MakeButton(page, "Untrack all", 86, 22)
+    allOff:SetPoint("LEFT", allOn, "RIGHT", 4, 0)
+    allOff:SetScript("OnClick", function() SetAll(false) end)
+    Tip(allOff, "Untrack all", "Unticks every spell shown in the list below. Their own sound, colour and mute settings are lost.")
+
+    spellList = MakeSpellList(page)
+    spellList:SetPoint("TOPLEFT", 14, -100)
 
     local hint = page:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    hint:SetPoint("TOPLEFT", bookList, "BOTTOMLEFT", 0, -8)
-    hint:SetWidth(LIST_W * 2 + 20)
+    hint:SetPoint("TOPLEFT", spellList, "BOTTOMLEFT", 0, -6)
+    hint:SetWidth(LIST_W)
     hint:SetJustifyH("LEFT")
-    hint:SetText("Right-click a tracked entry to give it its own sound or glow colour, or to mute it.")
+    hint:SetText("Tick a row to track it. Tracked rows can be muted, or given their own sound and glow colour (right-click the colour to reset it).")
 
     local ev = CreateFrame("Frame")
     ev:RegisterEvent("SPELLS_CHANGED")
     ev:RegisterEvent("BAG_UPDATE_DELAYED")
     ev:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
     ev:RegisterEvent("GET_ITEM_INFO_RECEIVED")
-    ev:SetScript("OnEvent", function() if panel:IsShown() then RefreshLists() end end)
+    ev:SetScript("OnEvent", function() if panel:IsShown() then RefreshList() end end)
 end
 
 ---------------------------------------------------------------------------
@@ -867,10 +1024,9 @@ local function Build()
             p:SetShown(j == i)
             tabs[j]:SetEnabled(j ~= i)
         end
-        if popup then popup:Hide() end
     end
 
-    for i, name in ipairs({ "Display", "Spells & items" }) do
+    for i, name in ipairs({ "Appearance", "Layout & alerts", "Spells & items" }) do
         local page = CreateFrame("Frame", nil, panel)
         page:SetPoint("TOPLEFT", 0, -86)
         page:SetPoint("BOTTOMRIGHT")
@@ -882,12 +1038,12 @@ local function Build()
         tabs[i] = tab
     end
 
-    BuildDisplayPage(pages[1])
-    BuildSpellsPage(pages[2])
+    BuildAppearancePage(pages[1])
+    BuildLayoutPage(pages[2])
+    BuildSpellsPage(pages[3])
     ShowPage(1)
 
     panel:SetScript("OnShow", RefreshAll)
-    panel:HookScript("OnHide", function() if popup then popup:Hide() end end)
 
     if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory then
         category = Settings.RegisterCanvasLayoutCategory(panel, "FlashCD")

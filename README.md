@@ -11,10 +11,12 @@ Author: Skeide
 - Every spellbook spell with a cooldown is tracked automatically, and newly learned spells are added as you learn them. A spell you remove stays removed, even when you learn a new rank.
 - Spells are tracked by name, so all ranks count as one spell.
 - Items with a "Use:" effect (trinkets, potions) can be tracked too.
-- Several icons show side by side when more than one spell comes ready at once.
-- Display options: size, position (drag or sliders), fade time, opacity, animation (pop, zoom, plain), glow border and colour, a sound, and the spell name under the icon.
+- Several icons show at once when more than one spell comes ready; the row can be centred or grow left, right, up or down.
+- Appearance: size, opacity, fade time, animation (pop, zoom, bounce, slide in, plain), glow border and colour, a shine burst, the spell name and a "Ready!" label with font size and outline. A live preview in the options shows the result as you change it.
 - Filters: only in combat, a minimum cooldown length, and skipping spells you can't cast in your current form.
-- Each tracked spell can have its own sound or glow colour, or be muted (right-click it in the list).
+- The spell list shows every spell (or item) in one place: tick to track it. Filter by spellbook tab or tracked status, sort by name or cooldown, and track or untrack everything shown at once.
+- Each tracked spell can be muted, or have its own sound or glow colour, right in its row.
+- A minimap button (drag it around the edge) and an addon compartment entry: left-click opens the options, right-click shows a test flash.
 - Settings are saved per character. A new character starts with the display settings of the last character you logged out on.
 
 ## Usage
@@ -24,6 +26,7 @@ Author: Skeide
 | `/flashcd` or `/fcd` | Open the options (Options → AddOns → FlashCD) |
 | `/flashcd unlock` | Show a box you can drag to move the flash; run it again to lock |
 | `/flashcd test` | Show a test flash |
+| `/flashcd minimap` | Show or hide the minimap button |
 | `/flashcd reset` | Put all settings back to defaults (tracked spells are kept) |
 
 ## Files
@@ -33,6 +36,7 @@ Author: Skeide
 | `FlashCD.toc` | Addon metadata and saved variables |
 | `Core.lua` | Cooldown tracking, the flash display, saved settings and slash commands |
 | `Options.lua` | The settings panel, plus the spellbook and item scanning |
+| `Minimap.lua` | The minimap button and the addon compartment entry |
 | `Media/Icon.tga` | The addon icon used in game (128×128, 32-bit uncompressed TGA) |
 | `Media/icon.png` | The same icon as a PNG, used by this README |
 | `tools/make_icon.py` | Script that draws the icon (needs Pillow) |

@@ -39,12 +39,19 @@ local DEFAULTS = {
     usableOnly = true,    -- skip spells that can't be cast now (wrong form etc.)
     autoTrack  = true,
     cdOnly     = true,
+    grow       = "center", -- center | right | left | up | down
+    shine      = true,     -- star burst over the icon as it appears
+    readyText  = false,    -- "Ready!" above the icon
+    fontSize   = 16,
+    fontOutline = "outline", -- none | outline | thick
+    minimap    = { hide = false, angle = 215 },
 }
 
 -- appearance settings copied to new characters
 local TEMPLATE_KEYS = {
     "size", "point", "x", "y", "duration", "alpha", "maxIcons", "anim", "showName",
     "glow", "glowColor", "sound", "combatOnly", "minCD", "usableOnly", "autoTrack", "cdOnly",
+    "grow", "shine", "readyText", "fontSize", "fontOutline", "minimap",
 }
 
 FlashCD.SOUNDS = {
@@ -60,8 +67,25 @@ FlashCD.SOUNDS = {
 FlashCD.ANIMS = {
     { key = "pop",   label = "Pop" },
     { key = "zoom",  label = "Zoom" },
+    { key = "bounce", label = "Bounce" },
+    { key = "slide", label = "Slide in" },
     { key = "plain", label = "Plain fade" },
 }
+
+FlashCD.GROWS = {
+    { key = "center", label = "Centred row" },
+    { key = "right",  label = "Grow right" },
+    { key = "left",   label = "Grow left" },
+    { key = "up",     label = "Grow up" },
+    { key = "down",   label = "Grow down" },
+}
+
+FlashCD.OUTLINES = {
+    { key = "none",    label = "No outline" },
+    { key = "outline", label = "Outline" },
+    { key = "thick",   label = "Thick outline" },
+}
+local OUTLINE_FLAGS = { none = "", outline = "OUTLINE", thick = "THICKOUTLINE" }
 
 local function IsSecret(v)
     if type(issecretvalue) ~= "function" then return false end
@@ -206,6 +230,7 @@ local function BaseCooldown(key)
     local ok, ms = pcall(GetSpellBaseCooldown, id)
     if ok and not IsSecret(ms) and type(ms) == "number" and ms > 0 then return ms / 1000 end
 end
+FlashCD.BaseCooldown = BaseCooldown
 
 ---------------------------------------------------------------------------
 -- Flash display: an anchor (the movable spot) and a row of icons on it
@@ -248,12 +273,22 @@ local GAP = 8
 local function Layout()
     local db = FlashCD.db
     local size, n = db.size, #active
+    local textH = db.fontSize + 6
+    local vstep = size + GAP + (db.showName and textH or 0) + (db.readyText and textH or 0)
     local total = n * size + (n - 1) * GAP
+    local vertical = db.grow == "up" or db.grow == "down"
     for i, f in ipairs(active) do
+        local k = i - 1
+        local x, y = 0, 0
+        if db.grow == "right" then x = k * (size + GAP)
+        elseif db.grow == "left" then x = -k * (size + GAP)
+        elseif db.grow == "up" then y = k * vstep
+        elseif db.grow == "down" then y = -k * vstep
+        else x = -total / 2 + size / 2 + k * (size + GAP) end
         f:SetSize(size, size)
-        f.name:SetWidth(size + GAP)
+        f.name:SetWidth(vertical and size * 3 or size + GAP)
         f:ClearAllPoints()
-        f:SetPoint("CENTER", anchor, "CENTER", -total / 2 + size / 2 + (i - 1) * (size + GAP), 0)
+        f:SetPoint("CENTER", anchor, "CENTER", x, y)
     end
 end
 
@@ -266,44 +301,125 @@ local function Release(f, skipLayout)
     if not skipLayout then Layout() end
 end
 
-local function IconOnUpdate(self, elapsed)
+-- Draw one frame of the flash; p runs from 0 (appears) to 1 (gone)
+local function Animate(f, p)
     local db = FlashCD.db
-    self.t = self.t + elapsed
-    local p = self.t / db.duration
-    if p >= 1 then Release(self) return end
-    local sc = 1
+    local size = f.fixedSize or db.size
+    local sc, dy, fadeIn = 1, 0, 1
     if db.anim == "pop" then
         sc = 1 + 0.25 * math.max(0, 1 - p * 4)
     elseif db.anim == "zoom" then
         sc = 1 + 0.6 * p
+    elseif db.anim == "bounce" then
+        sc = 1 + 0.3 * math.abs(math.sin(p * math.pi * 3)) * (1 - p) ^ 2
+    elseif db.anim == "slide" then
+        local q = math.max(0, 1 - p * 5)
+        dy = -size * 0.6 * q * q
+        fadeIn = math.min(1, p * 6)
     end
-    local s = db.size * sc
-    self.icon:SetSize(s, s)
-    self.glow:SetSize(s * 1.8, s * 1.8)
-    self:SetAlpha(db.alpha * (1 - p))
+    local s = size * sc
+    f.icon:SetSize(s, s)
+    f.icon:SetPoint("CENTER", f, "CENTER", 0, dy)
+    f.glow:SetSize(s * 1.8, s * 1.8)
+    f:SetAlpha(db.alpha * (1 - p) * fadeIn)
+
+    -- shine: a star burst that grows, turns and fades over the first part
+    local q = p / 0.45
+    if f.shineOn and q < 1 then
+        local ss = size * (0.6 + 1.6 * q)
+        f.shine:SetSize(ss, ss)
+        f.shine:SetAlpha(1 - q)
+        if f.shine.SetRotation then f.shine:SetRotation(q * 1.6) end
+        f.shine:Show()
+    else
+        f.shine:Hide()
+    end
 end
 
-local function NewIcon()
-    local f = CreateFrame("Frame", nil, UIParent)
-    f:SetFrameStrata("HIGH")
-    f.glow = f:CreateTexture(nil, "BACKGROUND")
-    f.glow:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
-    f.glow:SetBlendMode("ADD")
-    f.glow:SetPoint("CENTER")
+local function IconOnUpdate(self, elapsed)
+    local dur = FlashCD.db.duration
+    self.t = self.t + elapsed
+    if self.loop then
+        -- options preview: play, pause briefly, repeat
+        if self.t >= dur + 0.6 then self.t = 0 end
+        if self.t >= dur then
+            self:SetAlpha(0)
+            self.shine:Hide()
+            return
+        end
+    elseif self.t >= dur then
+        Release(self)
+        return
+    end
+    Animate(self, self.t / dur)
+end
+
+local function ApplyFont(fs, size)
+    local path = STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+    pcall(fs.SetFont, fs, path, size, OUTLINE_FLAGS[FlashCD.db.fontOutline] or "")
+end
+
+local function NewIcon(parent)
+    local f = CreateFrame("Frame", nil, parent or UIParent)
+    if not parent then f:SetFrameStrata("HIGH") end
+    f:SetSize(64, 64)
     f.icon = f:CreateTexture(nil, "ARTWORK")
     f.icon:SetPoint("CENTER")
     f.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    f.glow = f:CreateTexture(nil, "BACKGROUND")
+    f.glow:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
+    f.glow:SetBlendMode("ADD")
+    f.glow:SetPoint("CENTER", f.icon, "CENTER")
+    f.shine = f:CreateTexture(nil, "OVERLAY")
+    f.shine:SetTexture("Interface\\Cooldown\\star4")
+    f.shine:SetBlendMode("ADD")
+    f.shine:SetPoint("CENTER", f.icon, "CENTER")
+    f.shine:Hide()
     f.name = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     f.name:SetPoint("TOP", f, "BOTTOM", 0, -4)
     f.name:SetWordWrap(false)
+    f.ready = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    f.ready:SetPoint("BOTTOM", f, "TOP", 0, 4)
+    f.ready:SetTextColor(0.3, 1, 0.3)
+    f.ready:SetText("Ready!")
+    f.t = 0
+    f.loop, f.fixedSize, f.shineOn = false, false, false
     f:SetScript("OnUpdate", IconOnUpdate)
+    return f
+end
+
+-- Give an icon frame the look of a key from the current settings
+local function StyleIcon(f, key)
+    local db = FlashCD.db
+    local entry = type(db.spells[key]) == "table" and db.spells[key] or {}
+    f.key = key
+    f.icon:SetTexture(FlashCD.KeyIcon(key) or 134400)
+    ApplyFont(f.name, db.fontSize)
+    ApplyFont(f.ready, math.floor(db.fontSize * 0.9 + 0.5))
+    f.name:SetText(db.showName and FlashCD.KeyName(key) or "")
+    f.ready:SetShown(db.readyText)
+    local c = entry.color or db.glowColor
+    f.glow:SetVertexColor(c.r, c.g, c.b)
+    f.glow:SetShown(db.glow)
+    f.shineOn = db.shine
+end
+
+-- A looping flash for the options preview; its size is capped to fit the box
+function FlashCD.NewPreview(parent)
+    local f = NewIcon(parent)
+    f.loop = true
+    f.Update = function(self, key, maxSize)
+        StyleIcon(self, key)
+        self.fixedSize = math.min(FlashCD.db.size, maxSize)
+        self:SetSize(self.fixedSize, self.fixedSize)
+        self.name:SetWidth(self.fixedSize * 2.5)
+    end
     return f
 end
 
 function FlashCD.Flash(key)
     local db = FlashCD.db
-    local icon = FlashCD.KeyIcon(key)
-    if not icon then return end
+    if not FlashCD.KeyIcon(key) then return end
     local entry = type(db.spells[key]) == "table" and db.spells[key] or {}
 
     local f
@@ -316,14 +432,8 @@ function FlashCD.Flash(key)
         active[#active + 1] = f
     end
 
-    f.key = key
-    f.icon:SetTexture(icon)
-    f.name:SetText(db.showName and FlashCD.KeyName(key) or "")
-    local c = entry.color or db.glowColor
-    f.glow:SetVertexColor(c.r, c.g, c.b)
-    f.glow:SetShown(db.glow)
+    StyleIcon(f, key)
     f.t = 0
-    f:SetAlpha(db.alpha)
     f:Show()
     IconOnUpdate(f, 0)
     Layout()
@@ -525,6 +635,7 @@ function FlashCD.ResetSettings()
     for _, k in ipairs(TEMPLATE_KEYS) do db[k] = CopyTable(DEFAULTS[k]) end
     if FlashCD.unlocked then FlashCD.SetUnlocked(false) end
     FlashCD.ApplyLayout()
+    if FlashCD.UpdateMinimapButton then FlashCD.UpdateMinimapButton() end
 end
 
 local function SaveTemplate()
@@ -560,6 +671,7 @@ events:SetScript("OnEvent", function(self, event, arg1)
         FlashCD.MigrateSpells()
         FlashCD.ApplyLayout()
         if FlashCD.InitOptions then FlashCD.InitOptions() end
+        if FlashCD.InitMinimap then FlashCD.InitMinimap() end
         self:UnregisterEvent("ADDON_LOADED")
     elseif not FlashCD.db then
         return
@@ -585,6 +697,10 @@ SlashCmdList.FLASHCD = function(msg)
     msg = (msg or ""):lower():match("^%s*(.-)%s*$")
     if msg == "unlock" or msg == "lock" or msg == "move" then
         FlashCD.SetUnlocked(not FlashCD.unlocked)
+        if FlashCD.OnPositionChanged then FlashCD.OnPositionChanged() end
+    elseif msg == "minimap" then
+        FlashCD.db.minimap.hide = not FlashCD.db.minimap.hide
+        if FlashCD.UpdateMinimapButton then FlashCD.UpdateMinimapButton() end
         if FlashCD.OnPositionChanged then FlashCD.OnPositionChanged() end
     elseif msg == "test" then
         FlashCD.Test()
