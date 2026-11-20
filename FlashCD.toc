@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: FlashCD
+## Notes: Flashes a spell's icon in the middle of the screen when it comes off cooldown.
+## Author: Skeide
+## IconTexture: Interface\AddOns\FlashCD\Media\Icon
+## Version: 2.0.0
+## SavedVariables: FlashCDDB
+## SavedVariablesPerCharacter: FlashCDCharDB
+
+Core.lua
+Options.lua
