@@ -517,7 +517,7 @@ local function UpdateMovingBar()
     end
     if not movingBar then
         movingBar = MakeBackdropFrame(UIParent)
-        movingBar:SetSize(470, 52)
+        movingBar:SetSize(500, 58)
         movingBar:SetPoint("TOP", 0, -60)
         movingBar:SetFrameStrata("FULLSCREEN_DIALOG")
         movingBar:SetClampedToScreen(true)
@@ -528,18 +528,23 @@ local function UpdateMovingBar()
         movingBar:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
         local logo = movingBar:CreateTexture(nil, "ARTWORK")
         logo:SetSize(28, 28)
-        logo:SetPoint("LEFT", 12, 0)
+        local pad = WindowPad() + 6
+        logo:SetPoint("LEFT", pad, 0)
         logo:SetTexture("Interface\\AddOns\\FlashCD\\Media\\Icon")
-        movingBar.title = movingBar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        movingBar.title:SetPoint("TOPLEFT", logo, "TOPRIGHT", 10, -1)
-        movingBar.title:SetPoint("RIGHT", -100, 0)
-        movingBar.title:SetJustifyH("LEFT")
-        local hint = movingBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        hint:SetPoint("BOTTOMLEFT", logo, "BOTTOMRIGHT", 10, 1)
-        hint:SetText("Drag the box, or nudge it with the arrows around it or the arrow keys (Shift: 10 px)")
-        hint:SetTextColor(0.7, 0.7, 0.7)
         local done = MakeButton(movingBar, "Done", 76, 26, true)
-        done:SetPoint("RIGHT", -12, 0)
+        done:SetPoint("RIGHT", -pad, 0)
+        -- title and hint stay left of Done; the hint may wrap to two lines
+        movingBar.title = movingBar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        movingBar.title:SetPoint("TOPLEFT", logo, "TOPRIGHT", 10, 4)
+        movingBar.title:SetPoint("RIGHT", done, "LEFT", -12, 0)
+        movingBar.title:SetJustifyH("LEFT")
+        movingBar.title:SetWordWrap(false)
+        local hint = movingBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        hint:SetPoint("TOPLEFT", movingBar.title, "BOTTOMLEFT", 0, -4)
+        hint:SetPoint("RIGHT", done, "LEFT", -12, 0)
+        hint:SetJustifyH("LEFT")
+        hint:SetText("Drag the box or use the arrows to nudge it. Scroll over it to resize. Shift: 10 px.")
+        hint:SetTextColor(0.7, 0.7, 0.7)
         done:SetScript("OnClick", function() FlashCD.SetUnlocked(false) end)
     end
     local id = FlashCD.MovingGroup()
@@ -1068,6 +1073,9 @@ local function AskConfirm(text, onYes)
         confirmFrame = c
     end
     confirmFrame.text:SetText(text)
+    -- grow with the text (an import lists what it holds)
+    local th = confirmFrame.text:GetStringHeight()
+    confirmFrame:SetHeight(math.max(130, (type(th) == "number" and th or 40) + 80))
     confirmFrame.onYes = onYes
     confirmFrame:Show()
 end
@@ -1191,29 +1199,37 @@ local function BuildProfilesPage(page)
         end)
     end)
 
-    local ex = MakeSection(page, "Export (share with others)", "F", -128, 112)
-    local exSpells = true
-    local exCheck = MakeCheck(ex, "Include tracked spells",
-        function() return exSpells end, function(v) exSpells = v end)
-    exCheck:SetPoint("TOPLEFT", 10, -30)
+    local ex = MakeSection(page, "Export (share with others)", "F", -128, 180)
+    -- what to include: one checkbox per part, in two columns
+    local include = {}
+    for i, part in ipairs(FlashCD.PROFILE_PARTS) do
+        include[part.key] = true
+        local c = MakeCheck(ex, part.label,
+            function() return include[part.key] end, function(v) include[part.key] = v or nil end)
+        local col, row = (i <= 4) and 0 or 1, (i - 1) % 4
+        if col == 0 then c:SetPoint("TOPLEFT", ex, "TOPLEFT", 10, -30 - row * 24)
+        else c:SetPoint("TOPLEFT", ex, "TOP", 10, -30 - row * 24) end
+        c:SetChecked(true)
+    end
     local exBtn = MakeButton(ex, "Export", 90, 22, true)
-    exBtn:SetPoint("TOPLEFT", ex, "TOP", 10, -30)
+    exBtn:SetPoint("TOPLEFT", 16, -132)
     local exBox = MakeEditBox(ex, 300, 24)
     exBox:SetMaxLetters(0)
     if exBox.SetMaxBytes then exBox:SetMaxBytes(0) end
-    exBox:SetPoint("TOPLEFT", 16, -62)
+    exBox:SetPoint("LEFT", exBtn, "RIGHT", 10, 0)
     exBox:SetPoint("RIGHT", -16, 0)
     local exNote = ex:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     exNote:SetPoint("TOPLEFT", exBox, "BOTTOMLEFT", 2, -4)
-    exNote:SetText("Click Export, then press Ctrl+C to copy the text and send it to someone.")
+    exNote:SetText("Tick what to include, click Export, then press Ctrl+C to copy the text and send it to someone.")
     exBtn:SetScript("OnClick", function()
-        exBox:SetText(FlashCD.ExportString(exSpells))
+        if not next(include) then exNote:SetText("Tick at least one thing to include.") return end
+        exBox:SetText(FlashCD.ExportString(include))
         exBox:SetFocus()
         exBox:HighlightText()
         exNote:SetText("Copied text ready: press Ctrl+C now.")
     end)
 
-    local im = MakeSection(page, "Import", "F", -248, 124)
+    local im = MakeSection(page, "Import", "F", -316, 124)
     local imBox = MakeEditBox(im, 300, 24)
     imBox:SetMaxLetters(0)
     if imBox.SetMaxBytes then imBox:SetMaxBytes(0) end
@@ -1239,11 +1255,63 @@ local function BuildProfilesPage(page)
         end
         imNote:SetText("")
         local spells = imSpells and type(data.spells) == "table"
-        AskConfirm("Replace this character's FlashCD settings with the imported ones"
-            .. (spells and " (including tracked spells)" or "") .. "?", function()
+        local parts, names = FlashCD.PartsOf(data), {}
+        for _, part in ipairs(FlashCD.PROFILE_PARTS) do
+            if parts[part.key] and (part.key ~= "spells" or spells) then names[#names + 1] = part.label end
+        end
+        if #names == 0 then
+            imNote:SetTextColor(1, 0.4, 0.3)
+            imNote:SetText("Nothing to import: the text only has tracked spells, and that box is unticked.")
+            return
+        end
+        AskConfirm("Import into this character:\n\n" .. table.concat(names, "\n"), function()
             if FlashCD.ApplyProfile(data, spells) then
                 print("|cff33ccffFlashCD|r: settings imported.")
             end
+        end)
+    end)
+
+    local fresh = MakeSection(page, "Presets and start fresh", "F", -448, 110)
+    local chosenPreset = "default"
+    local presetNote = fresh:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    presetNote:SetTextColor(0.7, 0.7, 0.7)
+    local presetDD = MakeDropdown(fresh, "Preset", function()
+            local l = {}
+            for _, p in ipairs(FlashCD.PRESETS) do l[#l + 1] = { key = p.key, label = p.label } end
+            return l
+        end,
+        function() return chosenPreset end,
+        function(v) chosenPreset = v; presetNote:SetText(FlashCD.GetPreset(v).desc) end)
+    Place(presetDD, fresh, "L", -30)
+    presetDD.onHover = function(k) FlashCD.PreviewPreset(k) end
+    presetDD:SetTip("Preset", "Ready-made looks. A preset replaces your groups (look, layout and place); "
+        .. "Default (start fresh) puts every setting back to default.")
+    local freshSpells = false
+    local freshCheck = MakeCheck(fresh, "Also start over with tracked spells",
+        function() return freshSpells end, function(v) freshSpells = v end)
+    freshCheck:SetPoint("TOPLEFT", fresh, "TOP", 10, -44)
+    Tip(freshCheck, "Also start over with tracked spells",
+        "Clears the tracked list (also spells you unticked) and tracks your spells with a cooldown again, like on a new character.")
+    local applyBtn = MakeButton(fresh, "Apply", 90, 22, true)
+    applyBtn:SetPoint("TOPLEFT", 16, -78)
+    Tip(applyBtn, "Apply", "Uses the chosen preset. Cooldowns FlashCD has learned and the window's place are kept.")
+    local previewBtn = MakeFlatButton(fresh, "Preview", 80, 22)
+    previewBtn:SetPoint("LEFT", applyBtn, "RIGHT", 6, 0)
+    previewBtn:SetScript("OnClick", function() FlashCD.PreviewPreset(chosenPreset) end)
+    Tip(previewBtn, "Preview", "Shows the preset's flashes with your spells, without changing anything. "
+        .. "Hovering a preset in the list previews it too.")
+    presetNote:SetPoint("LEFT", previewBtn, "RIGHT", 10, 0)
+    presetNote:SetPoint("RIGHT", -16, 0)
+    presetNote:SetJustifyH("LEFT")
+    presetNote:SetText(FlashCD.GetPreset(chosenPreset).desc)
+    applyBtn:SetScript("OnClick", function()
+        local p = FlashCD.GetPreset(chosenPreset)
+        local what = (p.key == "default")
+            and "Start over with a fresh default profile? All settings and groups go back to default"
+            or ("Use the " .. p.label .. " preset? Your groups are replaced by its groups")
+        AskConfirm(what .. (freshSpells and ", and your tracked spells start over" or "") .. ".", function()
+            FlashCD.ApplyPreset(p.key, freshSpells)
+            print("|cff33ccffFlashCD|r: " .. (p.key == "default" and "fresh default profile." or (p.label .. " preset.")))
         end)
     end)
 end
@@ -1670,3 +1738,174 @@ function FlashCD.OpenOptions(show)
     panel:Show()
     panel:Raise()
 end
+
+---------------------------------------------------------------------------
+-- Welcome: shown once per account, the first time FlashCD is installed
+-- (not when updating). /fcd welcome shows it again.
+---------------------------------------------------------------------------
+local welcome
+local welcomePreset   -- the preset picked in the welcome (nil until one is)
+
+local function OpenOn(page)
+    FlashCD.OpenOptions(true)
+    if panel and panel:IsShown() and ShowPage then ShowPage(page) end
+end
+
+local function BuildWelcome()
+    if welcome then welcome:Hide() end
+    local w = MakeBackdropFrame(UIParent, "FlashCDWelcome")
+    w:SetSize(470, 312)
+    w:SetPoint("CENTER", 0, 80)
+    w:SetFrameStrata("DIALOG")
+    w:SetToplevel(true)
+    w:SetClampedToScreen(true)
+    w:SetMovable(true)
+    w:EnableMouse(true)
+    w:RegisterForDrag("LeftButton")
+    w:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    w:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    w:Hide()
+    local pad = WindowPad() + 10
+
+    local logo = w:CreateTexture(nil, "ARTWORK")
+    logo:SetSize(44, 44)
+    logo:SetPoint("TOPLEFT", pad, -pad)
+    logo:SetTexture("Interface\\AddOns\\FlashCD\\Media\\Icon")
+    local title = w:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", logo, "TOPRIGHT", 12, -4)
+    title:SetText("Welcome to FlashCD")
+    local sub = w:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
+    sub:SetText("Flashes a spell's icon when its cooldown is ready.")
+
+    w.status = w:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    w.status:SetPoint("TOPLEFT", logo, "BOTTOMLEFT", 0, -18)
+    w.status:SetPoint("RIGHT", -pad, 0)
+    w.status:SetJustifyH("LEFT")
+
+    local function Big(text, tip, onClick)
+        local b = MakeButton(w, text, 132, 30, true)
+        b:SetScript("OnClick", onClick)
+        Tip(b, text, tip)
+        return b
+    end
+    local choose = Big("Choose spells", "Opens the settings on the spell list: tick what should flash.", function()
+        w:Hide()
+        OpenOn("spells")
+    end)
+    choose:SetPoint("TOPLEFT", w.status, "BOTTOMLEFT", 0, -18)
+    local place = Big("Place the flash", "Shows where the flash appears. Drag it, nudge it with the arrows, "
+        .. "and scroll over it to change its size. Click Done when it's right.", function()
+        w:Hide()
+        FlashCD.ToggleMoveGroup(FlashCD.Groups()[1].id)
+    end)
+    place:SetPoint("LEFT", choose, "RIGHT", 8, 0)
+    local test = Big("Test flash", "Shows a flash right now, so you can see what it looks like.", function()
+        FlashCD.Test()
+    end)
+    test:SetPoint("LEFT", place, "RIGHT", 8, 0)
+
+    -- a preset to start from (all but the full reset; applies at once). The
+    -- row lines up with the buttons: Preset under the first two, Theme under
+    -- Test flash, labels above.
+    local presetDesc = w:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    presetDesc:SetTextColor(0.7, 0.7, 0.7)
+    presetDesc:SetJustifyH("LEFT")
+    local preset = MakeDropdown(w, "Preset", function()
+            local l = {}
+            for _, p in ipairs(FlashCD.PRESETS) do
+                if p.key ~= "default" then l[#l + 1] = { key = p.key, label = p.label } end
+            end
+            return l
+        end,
+        function() return welcomePreset end,
+        function(v)
+            welcomePreset = v
+            FlashCD.ApplyPreset(v, false)
+            presetDesc:SetText(FlashCD.GetPreset(v).desc)
+            FlashCD.Test()
+        end)
+    preset:SetPoint("TOPLEFT", choose, "BOTTOMLEFT", 0, -16)
+    preset:SetPoint("RIGHT", place, "RIGHT", 0, 0)
+    preset:SetTip("Preset", "A ready-made look to start from. Hover a preset in the list to preview it, "
+        .. "click to use it; you can change everything afterwards.")
+    presetDesc:SetPoint("TOPLEFT", preset, "BOTTOMLEFT", 0, -6)
+    presetDesc:SetPoint("RIGHT", -pad, 0)
+    presetDesc:SetText(welcomePreset and FlashCD.GetPreset(welcomePreset).desc or "Pick a ready-made look, or keep the standard one.")
+    preset.placeholder = "Choose a look"
+    preset.onHover = function(k) FlashCD.PreviewPreset(k) end
+    w.preset = preset
+
+    -- bottom bar: Import a profile on the left, Close on the right
+    local import = MakeFlatButton(w, "Import a profile", 130, 22)
+    import:SetPoint("BOTTOMLEFT", pad, pad)
+    import:SetScript("OnClick", function()
+        w:Hide()
+        OpenOn("profiles")
+    end)
+    Tip(import, "Import a profile", "Got a FlashCD text from a friend? Paste it on the Profiles & sharing page.")
+    local theme = MakeDropdown(w, "Theme", FlashCD.THEMES,
+        function() return DB().theme end,
+        function(v)
+            FlashCD.SetTheme(v)
+            BuildWelcome()   -- this window in the new look too
+            FlashCD.ShowWelcome()
+        end)
+    theme:SetPoint("TOPLEFT", test, "BOTTOMLEFT", 0, -16)
+    theme:SetPoint("RIGHT", test, "RIGHT", 0, 0)
+    theme:SetTip("Theme", "The look of FlashCD's windows: Modern (flat and dark) or WoW Forever (the game's own look).")
+    w.theme = theme
+
+    local foot = w:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    foot:SetPoint("BOTTOMLEFT", import, "TOPLEFT", 0, 10)
+    foot:SetText("Open the settings anytime with /fcd or the minimap button.")
+    local close = MakeFlatButton(w, "Close", 80, 22)
+    close:SetPoint("BOTTOMRIGHT", -pad, pad)
+    close:SetScript("OnClick", function() w:Hide() end)
+
+    if type(UISpecialFrames) == "table" then
+        local listed = false
+        for _, n in ipairs(UISpecialFrames) do if n == "FlashCDWelcome" then listed = true end end
+        if not listed then table.insert(UISpecialFrames, "FlashCDWelcome") end
+    end
+    welcome = w
+end
+
+function FlashCD.ShowWelcome()
+    if not welcome then BuildWelcome() end
+    local n = 0
+    for _ in pairs(DB().spells) do n = n + 1 end
+    welcome.status:SetText(n > 0
+        and ("Already tracking " .. n .. " of your spells with a cooldown. They'll flash in the middle "
+            .. "of the screen when they're ready.")
+        or "Choose the spells that should flash, then place the flash where you want it.")
+    welcome.theme:Refresh()
+    welcome.preset:Refresh()
+    welcome:Show()
+    welcome:Raise()
+    FlashCDDB.welcomed = true
+end
+
+-- After logging in: show the welcome once, a moment later, and never in combat
+local welcomeEvents = CreateFrame("Frame")
+welcomeEvents:RegisterEvent("PLAYER_ENTERING_WORLD")
+welcomeEvents:SetScript("OnEvent", function(self, event)
+    if not FlashCD.db or FlashCDDB.welcomed then
+        self:UnregisterAllEvents()
+        return
+    end
+    if event == "PLAYER_ENTERING_WORLD" then
+        self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+        local function Try()
+            if InCombatLockdown and InCombatLockdown() then
+                self:RegisterEvent("PLAYER_REGEN_ENABLED")
+            else
+                FlashCD.ShowWelcome()
+            end
+        end
+        if C_Timer and C_Timer.After then C_Timer.After(3, Try) else Try() end
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        self:UnregisterAllEvents()
+        FlashCD.ShowWelcome()
+    end
+end)

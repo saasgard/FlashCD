@@ -2,63 +2,95 @@
 
 ![FlashCD icon](Media/icon.png)
 
-A World of Warcraft addon for **WoW Forever (patch 1.60.1, Interface 16001)**. It flashes a spell's or item's icon in the middle of the screen when it comes off cooldown, then fades the icon out.
+FlashCD shows a spell's icon in the middle of your screen the moment its cooldown is ready. You don't have to watch your action bars to know when Barkskin or your trinket is back. The icon pops up, fades out after a second, and you get on with the fight.
 
-Author: Skeide
+Made for **WoW Forever (patch 1.60.1)** by Skeide.
 
-## Features
+## Getting started
 
-- Its own settings window (not squeezed into the game's Settings): resizable and movable, it can stay open while you play. A sidebar lists the pages and your groups; click a group to edit it, or drag a tracked spell onto it to move the spell there. Esc closes it. Two themes: Modern (flat and dark) and WoW Forever (the game's own dialog look), chosen on the Alerts & moving page; the window switches right away.
-- Every spellbook spell with a cooldown is tracked automatically, and newly learned spells are added as you learn them. A spell you remove stays removed, even when you learn a new rank.
-- Spells are tracked by name, so all ranks count as one spell.
-- Items with a "Use:" effect (trinkets, potions) can be tracked too.
-- Groups: up to 10 display groups, each with a colour of its own, each with its own position, size and look, for example big icons for important cooldowns and small ones for the rest. The sidebar lists them all; each group's page has its name, Move, Test, Copy and Delete. Pick a spell's group in its row, or move every spell the list shows to a group at once.
-- Moving: click Move on a group's page to show just that group's box, or Unlock all (Alerts & moving) for every group. The settings window hides while you move groups, and a small bar at the top of the screen has a Done button that brings it back. Each box shows one icon where the group's flashes start. Drag it (it snaps to a 25-pixel grid shown on screen, both can be turned off), or nudge it with the arrows around it (also in combat) or the arrow keys while hovering it (1 pixel, Shift: 10).
-- Several icons show at once when more than one spell comes ready; the row can be centred or grow left, right, up or down.
-- Appearance: size, opacity, fade time, animation (pop, zoom, bounce, slide in, plain), glow border and colour, a shine burst, the spell name and a "Ready!" label with font size and outline. A live preview in the options shows the result as you change it.
-- Filters: only in combat, a minimum cooldown length, and skipping spells you can't cast in your current form. A spell can also be set to flash only while you're in a form (bear, cat and so on).
-- An optional warning: a grey "Soon" flash a few seconds before a cooldown is ready.
-- Recent flashes: a page listing what flashed, what didn't and why (muted, not in combat, wrong form and so on).
-- The spell list shows every spell (or item) in one place: tick to track it. Each row shows its cooldown, its group (in the group's colour) and markers for its own settings. Filter by spellbook tab, tracked status or group, and sort by name or cooldown.
-- Click a spell to see its settings on the right: group, sound, mute, "only in a form" and glow colour. Ctrl-click or Shift-click (or Select all) to change several spells at once.
-- A minimap button (drag it around the edge) and an addon compartment entry: left-click opens the options, right-click shows a test flash.
-- Settings are saved per character. A new character starts with the settings of the last character you logged out on.
-- Profiles & sharing: copy settings (and, if you like, tracked spells) from another of your characters, or export them as a line of text to send to someone, who imports it. Imported text is read by FlashCD's own parser; it is never run as code.
+Install it and log in. FlashCD finds every spell in your spellbook that has a cooldown and starts tracking it straight away, so it works without any setup.
 
-## Usage
+The first time you log in, a small welcome window lets you:
+
+- choose which spells should flash
+- place the flash where you want it on screen
+- try one of the ready-made looks (hover one to see it before you pick it)
+- import settings a friend sent you
+
+After that, `/fcd` or the minimap button opens the settings.
+
+## Choosing spells
+
+The spell list shows everything in your spellbook (or the usable items in your bags and gear). Tick a spell to track it, untick it to stop. A spell you untick stays that way, even when you learn a new rank.
+
+Click a spell to change its own settings on the right: which group it flashes in, its own sound, its own glow colour, mute it, or make it flash only while you're in a form (bear, cat and so on). Ctrl-click or Shift-click to change several spells at once.
+
+## Groups
+
+You can have up to ten groups, each with its own place on screen and its own look. A common setup is big icons in the middle for your important cooldowns and a row of small ones underneath for the rest. Drag a spell from the list onto a group in the sidebar to move it there.
+
+For each group you can set the icon size, opacity, how long it stays, the animation (pop, zoom, bounce, slide in or a plain fade), a glow border, a shine effect, the spell name, a "Ready!" label, and which way the icons line up when several come ready together.
+
+## Placing a group
+
+Click **Move** on a group's page. The settings window steps aside and a box shows where that group's flash appears. Then:
+
+- drag the box (it snaps to a grid; both can be turned off)
+- click the small arrows around it, or use the arrow keys while hovering it, to nudge it a pixel at a time (Shift: 10)
+- scroll over it to make the icons bigger or smaller
+
+Click **Done** when you're happy with it. The arrows and scrolling work in combat too, so you can fine-tune during a dummy pull.
+
+## When it flashes
+
+You can have it flash only in combat, ignore short cooldowns, skip spells your current form can't cast, and play a sound. There's also an optional early warning: a grey "Soon" flash a few seconds before a cooldown is ready.
+
+If something didn't flash and you don't know why, the **Recent flashes** page tells you (muted, not in combat, wrong form and so on).
+
+## Sharing settings
+
+On **Profiles & sharing** you can:
+
+- copy settings from another of your characters
+- export your settings as a line of text and send it to someone, choosing what to include (just the positions, say, or everything)
+- import a text someone sent you
+- pick one of the presets, or start over with the defaults
+
+Imported text is only read as settings, never run as code, so a bad paste can't do any harm.
+
+## Commands
 
 | Command | What it does |
 |---|---|
-| `/flashcd` or `/fcd` | Open or close the FlashCD window (also from the minimap button, or Options → AddOns → FlashCD) |
-| `/flashcd unlock` | Show a box per group that you can drag or nudge with the arrow keys; run it again to lock |
-| `/flashcd test` | Show a test flash |
-| `/flashcd minimap` | Show or hide the minimap button |
-| `/flashcd spell <name>` | Show what FlashCD sees for a spell (IDs, cooldowns, tracked or not), to find out why it doesn't flash |
-| `/flashcd reset` | Put all settings back to defaults (tracked spells are kept) |
+| `/fcd` | Open or close the settings |
+| `/fcd unlock` | Move all groups at once (run it again to lock) |
+| `/fcd test` | Show a test flash |
+| `/fcd welcome` | Show the welcome window again |
+| `/fcd minimap` | Show or hide the minimap button |
+| `/fcd spell <name>` | Show what FlashCD knows about a spell, if it isn't flashing the way you expect |
+| `/fcd reset` | Put the settings back to default (your tracked spells are kept) |
 
-## Files
+`/flashcd` works for all of these too.
 
-| File | Contents |
+## Good to know
+
+- This version of the game hides cooldown timers in combat. FlashCD works around that, so spells flash in combat as normal.
+- Wand and ranged shots briefly lock your spells. FlashCD knows the difference and won't flash spells that were never really on cooldown.
+- Some spells only have a cooldown in a form, or have one the game doesn't report (Faerie Fire in bear form is one). FlashCD notices the cooldown the first time you use the spell and tracks it from then on.
+- Items used and ready again within the same fight may not flash, because the game hides their timers in combat.
+- Spells with charges flash when the last charge is back.
+- Settings are saved per character. A new character starts with the settings of the last one you played.
+- There are two looks for the settings window: Modern (flat and dark) and WoW Forever (the game's own style).
+
+## For developers
+
+| Path | What's in it |
 |---|---|
-| `FlashCD.toc` | Addon metadata and saved variables |
-| `Core.lua` | Cooldown tracking, the flash display, saved settings and slash commands |
-| `Widgets.lua` | The controls the settings window is built from, in both themes |
+| `Core.lua` | Cooldown tracking, the flashes, saved settings, profiles, slash commands |
+| `Widgets.lua` | The buttons, sliders and other controls the settings window is built from |
 | `Scan.lua` | Reading the spellbook and bags |
-| `Options.lua` | The FlashCD settings window and its pages |
-| `Minimap.lua` | The minimap button and the addon compartment entry |
-| `Media/Icon.tga` | The addon icon used in game (128×128, 32-bit uncompressed TGA) |
-| `Media/icon.png` | The same icon as a PNG, used by this README |
-| `tools/make_icon.py` | Script that draws the icon (needs Pillow) |
-| `tools/release.py` | Builds `dist/FlashCD-<version>.zip` to share (only the files the game needs) |
-| `tests/` | Tests run outside the game against a small fake of the WoW API: `python tests/run_tests.py` (needs the `lupa` package) |
-
-## Notes
-
-- This client hides cooldown times in combat. FlashCD reads the `isActive` / `isOnGCD` flags instead, which stay readable, so spell flashes work in combat.
-- Item cooldown times are hidden in combat too. An item used and recovered within one fight may not flash.
-- Spells with charges flash only when every charge is back.
-- Some spells (like Faerie Fire on WoW Forever) are replaced by a form version with a cooldown, for example in bear form. FlashCD checks for these when you log in, learn spells or shapeshift, remembers the form version and tracks it, also out of the form.
-- Some spells have a cooldown the game doesn't report. FlashCD watches spells without a reported cooldown, and the first time one stays on cooldown for more than about 3 seconds it remembers the length and starts tracking the spell (unless you unticked it). From then on it shows in the list with that cooldown.
-- Spells are looked up by their spellbook ID, so names with brackets, such as "Faerie Fire (Feral)", work.
-- FlashCD checks cooldowns when the game reports a change, every 0.1 s for spells that are on cooldown, and once a second for the rest, so it stays light.
-- Short lockouts (the global cooldown, wand and ranged shots) are not flashed. A spell must stay on cooldown for at least half its base cooldown, or more than about 3 seconds when the base cooldown is unknown.
+| `Options.lua` | The settings window, its pages and the welcome window |
+| `Minimap.lua` | The minimap button |
+| `tests/` | Tests that run outside the game against a small fake of the WoW API: `python tests/run_tests.py` (needs the `lupa` package) |
+| `tools/release.py` | Builds `dist/FlashCD-<version>.zip` with only the files the game needs |
+| `tools/make_icon.py` | Draws the addon icon (needs Pillow) |

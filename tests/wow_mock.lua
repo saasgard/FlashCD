@@ -42,8 +42,20 @@ mt.__index = function(t, k)
     end
     if k == "SetShown" then return function(self, v) if v then self:Show() else self:Hide() end end end
     if k == "IsShown" then return function(self) return rawget(self, "_shown") == true end end
-    if k == "RegisterEvent" then return function(self, e) rawset(self, "_ev_" .. e, true); frames[#frames + 1] = self end end
-    if k == "UnregisterEvent" then return function(self, e) rawset(self, "_ev_" .. e, nil) end end
+    if k == "RegisterEvent" then
+        return function(self, e)
+            rawset(self, "_ev_" .. e, true)
+            if not rawget(self, "_listed") then rawset(self, "_listed", true); frames[#frames + 1] = self end
+        end
+    end
+    if k == "UnregisterEvent" then return function(self, e) rawset(self, "_ev_" .. e, false) end end
+    if k == "UnregisterAllEvents" then
+        return function(self)
+            for key in pairs(self) do
+                if type(key) == "string" and key:match("^_ev_") then rawset(self, key, false) end
+            end
+        end
+    end
     if k == "SetText" then return function(self, v) rawset(self, "_text", v) end end
     if k == "GetText" then return function(self) return rawget(self, "_text") or "" end end
     if k == "SetChecked" then return function(self, v) rawset(self, "_checked", v and true or false) end end
@@ -196,7 +208,7 @@ function Failures() return failures end
 -- send a game event to every frame that registered it
 function fire(e, ...)
     for _, f in ipairs(frames) do
-        if f["_ev_" .. e] and f._s_OnEvent then f._s_OnEvent(f, e, ...) end
+        if rawget(f, "_ev_" .. e) == true and rawget(f, "_s_OnEvent") then f._s_OnEvent(f, e, ...) end
     end
 end
 

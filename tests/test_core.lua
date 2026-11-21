@@ -53,3 +53,7 @@ SlashCmdList.FLASHCD("spell bark")
 check(PRINTED and PRINTED[#PRINTED]:find("tracked"), "/fcd spell prints what FlashCD sees")
 
 CheckOwnGlobals()
+
+-- updating from an older version (saved settings exist): no welcome
+check(FlashCDDB.welcomed == true and not (NAMED.FlashCDWelcome and NAMED.FlashCDWelcome:IsShown()),
+    "updating doesn't show the welcome")

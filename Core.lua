@@ -442,7 +442,18 @@ local function MoverEnter(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:SetText(self.display.g.name, 1, 1, 1)
     GameTooltip:AddLine("Drag to move. Arrow keys: 1 pixel (Shift: 10).", nil, nil, nil, true)
+    GameTooltip:AddLine("Scroll: icon size, 2 pixels (Shift: 10).", nil, nil, nil, true)
     GameTooltip:Show()
+end
+
+-- Scroll over the box: the group's icon size (the Size slider's range)
+local SIZE_MIN, SIZE_MAX = 24, 300
+local function MoverWheel(self, delta)
+    local g = self.display.g
+    local step = IsShiftKeyDown() and 10 or 2
+    g.size = math.max(SIZE_MIN, math.min(SIZE_MAX, g.size + (delta > 0 and step or -step)))
+    FlashCD.ApplyLayout()
+    if FlashCD.OnPositionChanged then FlashCD.OnPositionChanged() end
 end
 
 local function MoverLeave(self)
@@ -473,6 +484,8 @@ local function GetDisplay(g)
     m:SetScript("OnDragStart", function(self) self:StartMoving() end)
     m:SetScript("OnDragStop", MoverDragStop)
     m:SetScript("OnKeyDown", MoverKeyDown)
+    m:EnableMouseWheel(true)
+    m:SetScript("OnMouseWheel", MoverWheel)
     m:SetScript("OnEnter", MoverEnter)
     m:SetScript("OnLeave", MoverLeave)
 
@@ -535,7 +548,7 @@ local function LayoutMover(d)
             t:Hide()
         end
     end
-    m.label:SetText(g.name)
+    m.label:SetText(g.name .. "  |cffaaaaaa" .. g.size .. " px|r")
     local c = g.color or GROUP_COLOURS[1]
     m.bg:SetColorTexture(c.r, c.g, c.b, 0.3)
     m.label:SetTextColor(c.r, c.g, c.b)
@@ -738,8 +751,10 @@ function FlashCD.NewPreview(parent)
 end
 
 -- Flash `key` in its group (or in group `g`). With `soon`, it is the warning
--- before the cooldown is ready: grey icon, "Soon", no sound.
-function FlashCD.Flash(key, g, soon)
+-- before the cooldown is ready: grey icon, "Soon", no sound. `opts`:
+--   top   = drawn above windows (tests and previews, so a window can't hide it)
+--   quiet = no sound
+function FlashCD.Flash(key, g, soon, opts)
     local db = FlashCD.db
     if not FlashCD.KeyIcon(key) then return end
     g = g or FlashCD.GroupOf(key)
@@ -758,6 +773,7 @@ function FlashCD.Flash(key, g, soon)
     end
 
     StyleIcon(f, key, g)
+    f:SetFrameStrata((opts and opts.top) and "TOOLTIP" or "HIGH")
     if soon then
         f.ready:SetText("Soon")
         f.ready:SetTextColor(1, 0.6, 0.1)
@@ -769,8 +785,21 @@ function FlashCD.Flash(key, g, soon)
     IconOnUpdate(f, 0)
     Layout(d)
 
-    if not soon then FlashCD.PlaySound(entry.sound or db.sound) end
+    if not soon and not (opts and opts.quiet) then FlashCD.PlaySound(entry.sound or db.sound) end
 end
+
+-- Show a group's flashes (a preview, not saved): place its spot and flash
+-- `keys` in it, above windows and without sound
+local function PreviewGroup(g, keys)
+    local d = GetDisplay(g)
+    d.anchor:ClearAllPoints()
+    d.anchor:SetPoint("CENTER", UIParent, g.point or "CENTER", g.x or 0, g.y or 0)
+    for i, key in ipairs(keys) do
+        if i > math.min(3, g.maxIcons or 3) then break end
+        FlashCD.Flash(key, g, false, { top = true, quiet = true })
+    end
+end
+FlashCD.PreviewGroup = PreviewGroup
 
 function FlashCD.ApplyLayout()
     local live = {}
@@ -849,7 +878,7 @@ function FlashCD.Test()
             end
         end
         if #keys == 0 then keys[1] = any end
-        for _, key in ipairs(keys) do FlashCD.Flash(key, g) end
+        for _, key in ipairs(keys) do FlashCD.Flash(key, g, false, { top = true }) end
     end
 end
 
@@ -1090,8 +1119,11 @@ end
 -- Saved settings (per character, new characters copy the last layout)
 ---------------------------------------------------------------------------
 local function InitDB()
+    -- nothing saved at all: FlashCD was just installed (shows the welcome)
+    local fresh = FlashCDDB == nil and FlashCDCharDB == nil
     FlashCDDB = FlashCDDB or {}
     local account = FlashCDDB
+    if not fresh and account.welcomed == nil then account.welcomed = true end   -- updating: no welcome
 
     if not FlashCDCharDB then
         if account.spells then
@@ -1107,7 +1139,7 @@ local function InitDB()
     -- account table keeps only the template for new characters and the
     -- saved settings of each character (to copy between them)
     for k in pairs(account) do
-        if k ~= "template" and k ~= "chars" then account[k] = nil end
+        if k ~= "template" and k ~= "chars" and k ~= "welcomed" then account[k] = nil end
     end
     if type(account.chars) ~= "table" then account.chars = {} end
 
@@ -1185,12 +1217,55 @@ function FlashCD.CharKey()
     return name .. " - " .. realm
 end
 
--- This character's settings (and, with withSpells, its tracked spells)
-function FlashCD.ProfileData(withSpells)
+-- The parts a profile can hold (for exporting only some of them). `keys` are
+-- settings; `group` are fields of each group.
+FlashCD.PROFILE_PARTS = {
+    { key = "position", label = "Group positions", group = { "point", "x", "y" } },
+    { key = "look", label = "Group look (size, animation, glow, text)",
+      group = { "size", "alpha", "duration", "anim", "showName", "glow", "glowColor", "shine",
+                "readyText", "fontSize", "fontOutline", "color" } },
+    { key = "layout", label = "Icons at once and grow direction", group = { "maxIcons", "grow" } },
+    { key = "alerts", label = "Sound and when to flash", keys = { "sound", "combatOnly", "minCD", "usableOnly", "preWarn" } },
+    { key = "tracking", label = "Auto-track options", keys = { "autoTrack", "cdOnly" } },
+    { key = "window", label = "Theme, grid and minimap button", keys = { "theme", "grid", "snap", "minimap" } },
+    { key = "spells", label = "Tracked spells (with their own settings)" },
+}
+
+-- The parts in a profile (older ones hold everything)
+local function PartsOf(data)
+    if type(data.parts) == "table" then return data.parts end
+    local p = {}
+    for _, part in ipairs(FlashCD.PROFILE_PARTS) do p[part.key] = true end
+    p.spells = type(data.spells) == "table" or nil
+    return p
+end
+FlashCD.PartsOf = PartsOf
+
+-- This character's settings: the parts in `parts` (a set of part keys), or
+-- everything when it is nil
+function FlashCD.ProfileData(parts)
+    if type(parts) ~= "table" then parts = nil end   -- true or nil: everything
     local db = FlashCD.db
-    local data = { v = 1, settings = {} }
-    for _, k in ipairs(TEMPLATE_KEYS) do data.settings[k] = CopyTable(db[k]) end
-    if withSpells then
+    local data = { v = 2, parts = {}, settings = {} }
+    local fields = {}
+    for _, part in ipairs(FlashCD.PROFILE_PARTS) do
+        if parts == nil or parts[part.key] then
+            data.parts[part.key] = true
+            for _, k in ipairs(part.keys or {}) do data.settings[k] = CopyTable(db[k]) end
+            for _, k in ipairs(part.group or {}) do fields[k] = true end
+        end
+    end
+    if next(fields) then
+        local groups = {}
+        for i, g in ipairs(db.groups) do
+            local c = { id = g.id, name = g.name }
+            for k in pairs(fields) do c[k] = CopyTable(g[k]) end
+            groups[i] = c
+        end
+        data.settings.groups = groups
+        data.settings.nextGroup = db.nextGroup
+    end
+    if data.parts.spells then
         data.spells = CopyTable(db.spells)
         data.removed = CopyTable(db.removed)
     end
@@ -1199,7 +1274,7 @@ end
 
 -- Saved per character (account-wide), so other characters can copy them
 local function SaveCharacter()
-    local data = FlashCD.ProfileData(true)
+    local data = FlashCD.ProfileData()
     local class = UnitClass and (UnitClass("player"))
     data.class = class
     FlashCDDB.chars[FlashCD.CharKey()] = data
@@ -1217,21 +1292,65 @@ function FlashCD.Characters()
     return list
 end
 
--- Use settings from profile data (from a character or an import)
+-- Use settings from profile data (from a character or an import). Only the
+-- parts it holds are changed. Groups: with every group part they replace
+-- yours; with only some (say positions), they go onto your groups in order,
+-- and missing groups are added.
 function FlashCD.ApplyProfile(data, withSpells)
     local db = FlashCD.db
     if type(data) ~= "table" or type(data.settings) ~= "table" then return false end
-    for _, k in ipairs(TEMPLATE_KEYS) do
-        if data.settings[k] ~= nil then db[k] = CopyTable(data.settings[k]) end
+    local parts = PartsOf(data)
+    local fields = {}
+    for _, part in ipairs(FlashCD.PROFILE_PARTS) do
+        if parts[part.key] then
+            for _, k in ipairs(part.keys or {}) do
+                if data.settings[k] ~= nil then db[k] = CopyTable(data.settings[k]) end
+            end
+            for _, k in ipairs(part.group or {}) do fields[k] = true end
+        end
+    end
+
+    local idMap = {}   -- the text's group ids -> ours
+    local src = data.settings.groups
+    if type(src) == "table" and #src > 0 and next(fields) then
+        if parts.position and parts.look and parts.layout then
+            db.groups = CopyTable(src)
+            db.nextGroup = data.settings.nextGroup
+            for _, g in ipairs(db.groups) do if type(g) == "table" and g.id then idMap[g.id] = g.id end end
+        else
+            for i, ig in ipairs(src) do
+                if type(ig) == "table" then
+                    local g = db.groups[i]
+                    if not g then
+                        g = { id = db.nextGroup, name = ig.name }
+                        db.nextGroup = db.nextGroup + 1
+                        db.groups[i] = g
+                    end
+                    for k in pairs(fields) do
+                        if ig[k] ~= nil then g[k] = CopyTable(ig[k]) end
+                    end
+                    if ig.id then idMap[ig.id] = g.id end
+                end
+            end
+        end
     end
     for k, v in pairs(DEFAULTS) do
         if db[k] == nil or type(db[k]) ~= type(v) then db[k] = CopyTable(v) end
     end
     FlashCD.NormalizeGroups(db)
-    if withSpells and type(data.spells) == "table" then
+
+    if withSpells and parts.spells and type(data.spells) == "table" then
+        local haveMap = next(idMap) ~= nil
         db.spells = {}
         for key, e in pairs(data.spells) do
-            if type(key) == "string" then db.spells[key] = type(e) == "table" and CopyTable(e) or {} end
+            if type(key) == "string" then
+                local c = type(e) == "table" and CopyTable(e) or {}
+                if c.group ~= nil then
+                    if haveMap then c.group = idMap[c.group]
+                    elseif not FlashCD.GetGroupByID(c.group) then c.group = nil end
+                end
+                db.spells[key] = c
+            end
         end
         db.removed = type(data.removed) == "table" and CopyTable(data.removed) or {}
     end
@@ -1246,6 +1365,145 @@ end
 function FlashCD.CopyFromCharacter(key, withSpells)
     local data = FlashCDDB.chars and FlashCDDB.chars[key]
     return FlashCD.ApplyProfile(data, withSpells)
+end
+
+-- Start over with a fresh default profile: every setting back to default and
+-- one default group. With withSpells, the tracked spells start over too (the
+-- spellbook is auto-tracked again). Learned cooldowns and the window's place
+-- are kept.
+function FlashCD.ResetToFresh(withSpells)
+    local db = FlashCD.db
+    for _, k in ipairs(TEMPLATE_KEYS) do db[k] = CopyTable(DEFAULTS[k]) end
+    db.groups, db.nextGroup = nil, nil
+    FlashCD.NormalizeGroups(db)   -- makes the one default group
+    if withSpells then
+        db.spells, db.known, db.removed, db.skippedNoCD = {}, {}, {}, {}
+        FlashCD.AutoTrack()
+    else
+        for _, e in pairs(db.spells) do
+            if type(e) == "table" then e.group = nil end   -- their groups are gone
+        end
+    end
+    if FlashCD.unlocked then FlashCD.SetUnlocked(false) end
+    FlashCD.ApplyLayout()
+    FlashCD.ResetState()
+    if FlashCD.UpdateMinimapButton then FlashCD.UpdateMinimapButton() end
+    if FlashCD.OnProfileApplied then FlashCD.OnProfileApplied() end
+end
+
+-- Built-in looks to start from. A preset replaces the groups (look, layout,
+-- place) and may set the sound; tracked spells, theme and other settings stay.
+-- "default" is the full fresh start above.
+local function PresetGroup(t)
+    local g = CopyTable(GROUP_DEFAULTS)
+    for k, v in pairs(t) do g[k] = v end
+    return g
+end
+
+FlashCD.PRESETS = {
+    { key = "default", label = "Default (start fresh)",
+      desc = "Every setting back to default and one group, like a new install." },
+    { key = "standard", label = "Standard",
+      desc = "One group in the middle with the default look.",
+      groups = { PresetGroup({}) } },
+    { key = "minimal", label = "Minimal",
+      desc = "One small, quiet icon: no glow, name or shine.",
+      groups = { PresetGroup({ size = 56, y = 60, anim = "plain", glow = false, showName = false,
+                               shine = false, alpha = 0.9, duration = 0.8 }) } },
+    { key = "bold", label = "Big and bold",
+      desc = "A large bouncing icon with glow, shine, \"Ready!\" and a raid warning sound.",
+      sound = "raid",
+      groups = { PresetGroup({ size = 140, y = 140, anim = "bounce", readyText = true,
+                               fontSize = 20, duration = 1.4 }) } },
+    { key = "bigsmall", label = "Big and small",
+      desc = "Two groups: cooldowns of 1 minute or more big in the middle, the rest small in a row below.",
+      split = 60,
+      groups = { PresetGroup({ name = "Big", size = 110, y = 150 }),
+                 PresetGroup({ name = "Small", size = 48, y = 40, maxIcons = 6, showName = false,
+                               anim = "pop" }) } },
+    { key = "right", label = "Column on the right",
+      desc = "Medium icons stacked in a column to the right of your character.",
+      groups = { PresetGroup({ size = 60, x = 260, y = 80, grow = "down", anim = "slide",
+                               fontSize = 13, maxIcons = 5 }) } },
+    { key = "left", label = "Column on the left",
+      desc = "Medium icons stacked in a column to the left of your character.",
+      groups = { PresetGroup({ size = 60, x = -260, y = 80, grow = "down", anim = "slide",
+                               fontSize = 13, maxIcons = 5 }) } },
+}
+
+function FlashCD.GetPreset(key)
+    for _, p in ipairs(FlashCD.PRESETS) do
+        if p.key == key then return p end
+    end
+end
+
+-- Show what a preset looks like with your spells, without using it
+function FlashCD.PreviewPreset(key)
+    local p = FlashCD.GetPreset(key)
+    if not p then return false end
+    local db = FlashCD.db
+    -- your tracked spells, longest cooldown first (or a few from the spellbook)
+    local keys = {}
+    for k in pairs(db.spells) do keys[#keys + 1] = k end
+    if #keys == 0 and FlashCD.ScanSpellbook then
+        for _, d in ipairs(FlashCD.ScanSpellbook()) do
+            keys[#keys + 1] = d.key
+            if #keys >= 4 then break end
+        end
+    end
+    local function Len(k) return (not FlashCD.ItemID(k) and FlashCD.CooldownLength(k)) or 0 end
+    table.sort(keys, function(a, b)
+        local la, lb = Len(a), Len(b)
+        if la ~= lb then return la > lb end
+        return tostring(a) < tostring(b)
+    end)
+    local groups = p.groups or { GROUP_DEFAULTS }
+    for i, src in ipairs(groups) do
+        local g = CopyTable(src)
+        g.id = "preview" .. i
+        local pick = {}
+        for _, k in ipairs(keys) do
+            if not p.split or ((Len(k) >= p.split) == (i == 1)) then pick[#pick + 1] = k end
+        end
+        if #pick == 0 then pick = { keys[i] or keys[1] } end
+        PreviewGroup(g, pick)
+    end
+    if p.sound then FlashCD.PlaySound(p.sound, true) end
+    return true
+end
+
+-- Use a preset. With freshSpells, the tracked spells start over too.
+function FlashCD.ApplyPreset(key, freshSpells)
+    local p = FlashCD.GetPreset(key)
+    if not p then return false end
+    if key == "default" then
+        FlashCD.ResetToFresh(freshSpells)
+        return true
+    end
+    local db = FlashCD.db
+    if freshSpells then
+        db.spells, db.known, db.removed, db.skippedNoCD = {}, {}, {}, {}
+        FlashCD.AutoTrack()
+    end
+    local groups = CopyTable(p.groups)
+    for i, g in ipairs(groups) do g.id = i end
+    -- spells' groups: sorted by cooldown length for a split preset, else the first group
+    for k, e in pairs(db.spells) do
+        if type(e) == "table" then
+            e.group = nil
+            if p.split then
+                local len = not FlashCD.ItemID(k) and FlashCD.CooldownLength(k)
+                e.group = (len and len >= p.split) and 1 or 2
+            end
+        end
+    end
+    local data = { v = 2, parts = { position = true, look = true, layout = true },
+                   settings = { groups = groups, nextGroup = #groups + 1 } }
+    if p.sound then
+        data.parts.alerts = true
+        data.settings.sound = p.sound
+    end
+    return FlashCD.ApplyProfile(data, false)
 end
 
 -- Text form: "FlashCD:1:" followed by a Lua-like table of strings, numbers,
@@ -1279,9 +1537,10 @@ end
 
 local EXPORT_PREFIX = "FlashCD:1:"
 
-function FlashCD.ExportString(withSpells)
+-- `parts`: a set of part keys to include (nil = everything)
+function FlashCD.ExportString(parts)
     local out = {}
-    Serialize(FlashCD.ProfileData(withSpells), out)
+    Serialize(FlashCD.ProfileData(parts), out)
     return EXPORT_PREFIX .. table.concat(out)
 end
 
@@ -1469,6 +1728,8 @@ SlashCmdList.FLASHCD = function(msg)
         if FlashCD.OnPositionChanged then FlashCD.OnPositionChanged() end
     elseif msg:match("^spell") then
         FlashCD.DebugSpell(msg:match("^spell%s*(.*)$"))
+    elseif msg == "welcome" then
+        if FlashCD.ShowWelcome then FlashCD.ShowWelcome() end
     elseif msg == "minimap" then
         FlashCD.db.minimap.hide = not FlashCD.db.minimap.hide
         if FlashCD.UpdateMinimapButton then FlashCD.UpdateMinimapButton() end

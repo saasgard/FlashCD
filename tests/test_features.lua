@@ -84,3 +84,55 @@ check(db.spells.Barkskin ~= nil, "... and keeps this character's spells")
 SlashCmdList.FLASHCD("")
 FlashCD.Log("Barkskin", "flash", "test entry")
 check(FlashCD.log[1].text == "test entry", "log entries can be added while the window is open")
+
+-- a fresh default profile
+FlashCD.AddGroup()
+db.groups[1].size, db.sound, db.theme = 40, "raid", "wow"
+FlashCD.TrackKey("Growl")
+db.spells.Growl.group = db.groups[2].id
+db.spells.Growl.sound = "bell"
+FlashCD.UntrackKey("Maul")
+local w2 = NAMED.FlashCDWindow
+FlashCD.ResetToFresh(false)
+check(#db.groups == 1 and db.groups[1].name == "Main" and db.groups[1].size == 96, "fresh profile: one default group")
+check(db.sound == "none" and db.theme == "modern", "... and default settings")
+check(db.spells.Growl and db.spells.Growl.sound == "bell" and db.spells.Growl.group == nil,
+    "... keeps tracked spells (in the default group) unless asked")
+check(NAMED.FlashCDWindow ~= w2, "... and the window shows it")
+db.learnedCD.Growl = 7
+FlashCD.ResetToFresh(true)
+check(db.spells.Barkskin ~= nil and db.spells.Growl ~= nil and db.spells.Growl.sound == nil,
+    "with spells: the tracked list starts over from the spellbook (spells with a learned cooldown count)")
+check(next(db.removed) == nil, "... and unticked spells are forgotten")
+check(db.learnedCD.Growl == 7, "learned cooldowns are kept")
+
+-- exporting only some parts
+local id2 = FlashCD.AddGroup()
+db.groups[1].x, db.groups[1].y, db.groups[1].size = 111, 222, 64
+FlashCD.GetGroup(id2).x, FlashCD.GetGroup(id2).y = -50, -60
+db.sound = "ping"
+local posText = FlashCD.ExportString({ position = true })
+local pos = FlashCD.ParseExport(posText)
+check(pos and pos.parts.position and not pos.parts.look and not pos.spells, "export holds only the chosen parts")
+check(pos and pos.settings.groups[1].x == 111 and pos.settings.groups[1].size == nil and pos.settings.sound == nil,
+    "... only positions, no size or sound")
+
+-- import positions only, into a character with one group of its own look
+FlashCD.ResetToFresh(false)
+db.groups[1].size, db.sound = 40, "bell"
+FlashCD.ApplyProfile(pos, true)
+check(db.groups[1].x == 111 and db.groups[1].y == 222 and db.groups[1].size == 40,
+    "importing positions moves your group and keeps its look")
+check(#db.groups == 2 and db.groups[2].x == -50 and db.groups[2].size == 96,
+    "a missing group is added, with the default look")
+check(db.sound == "bell", "settings not in the text are kept")
+
+-- a full export still replaces the groups completely
+local full = FlashCD.ParseExport(FlashCD.ExportString())
+FlashCD.AddGroup(); FlashCD.AddGroup()
+FlashCD.ApplyProfile(full, true)
+check(#db.groups == 2, "a full import replaces the groups")
+
+-- older texts and saved characters (no parts list) hold everything
+check(FlashCD.PartsOf({ settings = {} }).look and not FlashCD.PartsOf({ settings = {} }).spells,
+    "older profiles count as everything (spells only if present)")

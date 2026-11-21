@@ -35,6 +35,18 @@ SHIFT = true; m.arrowLEFT._s_OnClick(m.arrowLEFT); SHIFT = false
 check(g2.x == 171 and g2.y == 63, "the arrow buttons nudge (1 px, Shift 10 px), also in combat")
 IN_COMBAT = false
 
+-- scroll over the box: icon size
+m._s_OnMouseWheel(m, 1)
+check(g2.size == 42, "scrolling up makes the icon 2 px bigger")
+SHIFT = true; m._s_OnMouseWheel(m, -1); m._s_OnMouseWheel(m, -1); SHIFT = false
+check(g2.size == 24, "Shift-scroll down 10 px at a time, not below 24 px")
+check(m.label:GetText():find("24 px"), "the box shows the size")
+for _ = 1, 40 do SHIFT = true; m._s_OnMouseWheel(m, 1) end
+SHIFT = false
+check(g2.size == 300, "... and not above 300 px")
+g2.size = 40
+FlashCD.ApplyLayout()
+
 FlashCD.ToggleMoveGroup(db.groups[1].id)
 check(m1:IsShown() and not m:IsShown(), "Move on another group switches to it")
 FlashCD.ToggleMoveGroup(db.groups[1].id)

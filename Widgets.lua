@@ -366,7 +366,8 @@ local function CloseMenu()
     if menu then menu:Hide() end
 end
 
-local function OpenMenu(owner, list, get, onPick)
+-- onHover(key), if given, runs when the mouse moves onto an item (previews)
+local function OpenMenu(owner, list, get, onPick, onHover)
     if not menu then
         -- a click anywhere outside the menu closes it
         catcher = CreateFrame("Button", nil, UIParent)
@@ -421,6 +422,7 @@ local function OpenMenu(owner, list, get, onPick)
         it.text:SetText(e.label)
         it.mark:SetShown(e.key == cur)
         it:SetScript("OnClick", function() CloseMenu() onPick(e.key) end)
+        it:SetScript("OnEnter", onHover and function() onHover(e.key) end or nil)
         it:Show()
     end
     for i = #items + 1, #menu.items do menu.items[i]:Hide() end
@@ -478,10 +480,10 @@ local function MakeDropdown(parent, label, list, get, set, w)
         for _, e in ipairs(ListOf(list)) do
             if e.key == cur then text:SetText(e.label) return end
         end
-        text:SetText("-")
+        text:SetText(holder.placeholder or "-")   -- nothing chosen
     end
     b:SetScript("OnClick", function()
-        OpenMenu(b, list, get, function(v) set(v) holder:Refresh() end)
+        OpenMenu(b, list, get, function(v) set(v) holder:Refresh() end, holder.onHover)
     end)
     holder.SetTip = function(self, title, tip)
         Tip(b, title, tip)
