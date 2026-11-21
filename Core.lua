@@ -20,38 +20,70 @@ local NO_BASE_MIN = 3.2   -- shortest real cooldown accepted when the base coold
 
 -- per-character settings; FlashCD.db points at the active table
 local DEFAULTS = {
-    spells     = {},      -- [key] = { muted = bool, sound = key|nil, color = {r,g,b}|nil }
+    spells     = {},      -- [key] = { muted, sound, color, group = group id }
     known      = {},      -- [spell name] = true for every spell already seen
-    size       = 96,
-    point      = "CENTER",
-    x          = 0,
-    y          = 120,
-    duration   = 1.0,     -- seconds the flash takes to fade out
-    alpha      = 1.0,
-    maxIcons   = 4,       -- how many flashes can show side by side
-    anim       = "pop",   -- pop | zoom | plain
-    showName   = true,
-    glow       = true,
-    glowColor  = { r = 1, g = 0.82, b = 0 },
+    removed    = {},      -- [key] = true: unticked by you, never auto-tracked again
+    learnedCD  = {},      -- [spell name] = seconds: cooldowns the game doesn't report
+    skippedNoCD = {},     -- [spell name] = true: not auto-tracked, it had no cooldown then
+    overrides  = {},      -- [spell name] = spell ID that replaces it in a form (seen once, kept)
+    -- groups = { group, ... } (see GROUP_DEFAULTS), nextGroup = next group id
     sound      = "none",
     combatOnly = false,
     minCD      = 0,       -- seconds; shorter cooldowns don't flash
     usableOnly = true,    -- skip spells that can't be cast now (wrong form etc.)
     autoTrack  = true,
     cdOnly     = true,
+    minimap    = { hide = false, angle = 215 },
+    grid       = true,    -- show a grid while groups are unlocked
+    snap       = true,    -- snap dragged groups to the grid
+    window     = {},      -- the settings window's size and place
+    theme      = "modern", -- look of the settings window: modern | wow
+}
+
+-- each display group: where it shows and how it looks
+-- Each group gets a colour of its own (shown in the settings and on its
+-- move box), picked from this list by group id
+local GROUP_COLOURS = {
+    { r = 1,    g = 0.82, b = 0 },
+    { r = 0.35, g = 0.75, b = 1 },
+    { r = 0.45, g = 1,    b = 0.45 },
+    { r = 1,    g = 0.45, b = 0.3 },
+    { r = 0.8,  g = 0.5,  b = 1 },
+    { r = 1,    g = 0.55, b = 0.85 },
+    { r = 0.3,  g = 1,    b = 0.9 },
+    { r = 1,    g = 0.65, b = 0.2 },
+    { r = 0.6,  g = 0.65, b = 1 },
+    { r = 0.85, g = 0.85, b = 0.85 },
+}
+local function GroupColour(id)
+    local c = GROUP_COLOURS[(id - 1) % #GROUP_COLOURS + 1]
+    return { r = c.r, g = c.g, b = c.b }
+end
+
+local GROUP_DEFAULTS = {
+    name       = "Main",
+    size       = 96,
+    point      = "CENTER",
+    x          = 0,
+    y          = 120,
+    duration   = 1.0,     -- seconds the flash takes to fade out
+    alpha      = 1.0,
+    maxIcons   = 4,       -- how many flashes can show at once
+    anim       = "pop",   -- pop | zoom | bounce | slide | plain
+    showName   = true,
+    glow       = true,
+    glowColor  = { r = 1, g = 0.82, b = 0 },
     grow       = "center", -- center | right | left | up | down
     shine      = true,     -- star burst over the icon as it appears
     readyText  = false,    -- "Ready!" above the icon
     fontSize   = 16,
     fontOutline = "outline", -- none | outline | thick
-    minimap    = { hide = false, angle = 215 },
 }
 
--- appearance settings copied to new characters
+-- settings copied to new characters
 local TEMPLATE_KEYS = {
-    "size", "point", "x", "y", "duration", "alpha", "maxIcons", "anim", "showName",
-    "glow", "glowColor", "sound", "combatOnly", "minCD", "usableOnly", "autoTrack", "cdOnly",
-    "grow", "shine", "readyText", "fontSize", "fontOutline", "minimap",
+    "groups", "nextGroup", "sound", "combatOnly", "minCD", "usableOnly",
+    "autoTrack", "cdOnly", "minimap", "grid", "snap", "theme",
 }
 
 FlashCD.SOUNDS = {
@@ -114,7 +146,43 @@ function FlashCD.GetSpellName(id)
     if GetSpellInfo then return (GetSpellInfo(id)) end
 end
 
+-- Spellbook IDs by name (highest rank), filled by every spellbook scan.
+-- Spells are looked up by these IDs, not by name: the game reads a name like
+-- "Faerie Fire (Feral)" as "Faerie Fire" rank "Feral", which finds the wrong spell.
+local idByName = {}
+
+-- The spell that replaces `id` right now (e.g. a feral version in bear
+-- form), or nil when it isn't replaced
+local function OverrideOf(id)
+    local fn = (C_Spell and C_Spell.GetOverrideSpell) or FindSpellOverrideByID
+    if not fn or type(id) ~= "number" then return nil end
+    local ok, o = pcall(fn, id)
+    if ok and type(o) == "number" and not IsSecret(o) and o ~= 0 and o ~= id then return o end
+end
+FlashCD.OverrideOf = OverrideOf
+
+function FlashCD.RememberSpell(name, id)
+    if not (name and id) then return end
+    idByName[name] = id
+    -- a form version can have a cooldown the normal one hasn't: once seen,
+    -- keep using it, also out of the form
+    local o = OverrideOf(id)
+    if o and FlashCD.db then FlashCD.db.overrides[name] = o end
+end
+
+-- What to pass to the spell API for a tracked key: its form version or its
+-- spellbook ID when known, else the name
+local function SpellRef(key)
+    local db = FlashCD.db
+    return (db and db.overrides[key]) or idByName[key] or key
+end
+FlashCD.SpellRef = SpellRef
+
 function FlashCD.GetSpellID(name)
+    local db = FlashCD.db
+    if db and db.overrides[name] then return db.overrides[name] end
+    if idByName[name] then return idByName[name] end
+    if type(name) == "number" then return name end
     if C_Spell and C_Spell.GetSpellInfo then
         local info = C_Spell.GetSpellInfo(name)
         return info and info.spellID
@@ -137,6 +205,7 @@ function FlashCD.KeyName(key)
         end
         return name or ("Item " .. item)
     end
+    if type(key) == "string" then return key end   -- spell keys are names
     return FlashCD.GetSpellName(key) or tostring(key)
 end
 
@@ -147,7 +216,7 @@ function FlashCD.KeyIcon(key)
         if GetItemIcon then return GetItemIcon(item) end
         return nil
     end
-    return FlashCD.GetSpellIcon(key)
+    return FlashCD.GetSpellIcon(SpellRef(key))
 end
 
 function FlashCD.SoundByKey(key)
@@ -175,7 +244,7 @@ local readyAt = {}   -- items: when the last readable cooldown ends
 -- true/false = on cooldown or not (nil = unknown); 2nd value: cooldown length when readable
 local function SpellCooldown(key)
     if C_Spell and C_Spell.GetSpellCooldown then
-        local ok, info = pcall(C_Spell.GetSpellCooldown, key)
+        local ok, info = pcall(C_Spell.GetSpellCooldown, SpellRef(key))
         if not ok or type(info) ~= "table" then return nil end
         local s, d = info.startTime, info.duration
         if IsSecret(s) or IsSecret(d) or type(s) ~= "number" or type(d) ~= "number" then
@@ -194,7 +263,7 @@ local function SpellCooldown(key)
         local cd = s > 0 and d > GCD_MAX
         return cd, cd and d or nil
     elseif GetSpellCooldown then
-        local s, d = GetSpellCooldown(key)
+        local s, d = GetSpellCooldown(SpellRef(key))
         if type(s) ~= "number" or type(d) ~= "number" then return nil end
         local cd = s > 0 and d > GCD_MAX
         return cd, cd and d or nil
@@ -232,87 +301,314 @@ local function BaseCooldown(key)
 end
 FlashCD.BaseCooldown = BaseCooldown
 
----------------------------------------------------------------------------
--- Flash display: an anchor (the movable spot) and a row of icons on it
----------------------------------------------------------------------------
-local anchor = CreateFrame("Frame", "FlashCDAnchor", UIParent)
-anchor:SetClampedToScreen(true)
-anchor:SetMovable(true)
-anchor:RegisterForDrag("LeftButton")
-anchor:SetFrameStrata("FULLSCREEN_DIALOG")
-anchor:Hide()
+-- Cooldown length: the game's base cooldown, or one FlashCD saw itself
+local function CooldownLength(key)
+    return BaseCooldown(key) or (FlashCD.db and FlashCD.db.learnedCD[key])
+end
+FlashCD.CooldownLength = CooldownLength
 
-anchor.bg = anchor:CreateTexture(nil, "BACKGROUND")
-anchor.bg:SetPoint("TOPLEFT", -2, 2)
-anchor.bg:SetPoint("BOTTOMRIGHT", 2, -2)
-anchor.bg:SetColorTexture(0, 0.6, 1, 0.5)
-anchor.preview = anchor:CreateTexture(nil, "ARTWORK")
-anchor.preview:SetAllPoints()
-anchor.preview:SetTexture(134400)   -- question mark icon
-anchor.preview:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-anchor.label = anchor:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-anchor.label:SetPoint("BOTTOM", anchor, "TOP", 0, 4)
-anchor.label:SetText("FlashCD - drag me, then /flashcd lock")
+---------------------------------------------------------------------------
+-- Groups: each has its own spot on screen and its own look
+---------------------------------------------------------------------------
+function FlashCD.Groups() return FlashCD.db.groups end
 
-anchor:SetScript("OnDragStart", function(self) self:StartMoving() end)
-anchor:SetScript("OnDragStop", function(self)
-    self:StopMovingOrSizing()
-    local cx, cy = self:GetCenter()
-    local ux, uy = UIParent:GetCenter()
+-- The group with this id; the first group when there is no such group
+function FlashCD.GetGroup(id)
+    local groups = FlashCD.db.groups
+    for _, g in ipairs(groups) do
+        if g.id == id then return g end
+    end
+    return groups[1]
+end
+
+-- The group with this id, or nil
+function FlashCD.GetGroupByID(id)
+    for _, g in ipairs(FlashCD.db.groups) do
+        if g.id == id then return g end
+    end
+end
+
+-- The group a tracked key flashes in
+function FlashCD.GroupOf(key)
+    local e = FlashCD.db.spells[key]
+    return FlashCD.GetGroup(type(e) == "table" and e.group or nil)
+end
+
+FlashCD.MAX_GROUPS = 10
+
+-- New group with the look of `from` (or the defaults), placed below the last
+-- group. Returns its id, or nil when there are already MAX_GROUPS groups.
+function FlashCD.AddGroup(from)
     local db = FlashCD.db
-    db.point = "CENTER"
-    db.x = math.floor(cx - ux + 0.5)
-    db.y = math.floor(cy - uy + 0.5)
+    if #db.groups >= FlashCD.MAX_GROUPS then return nil end
+    local last = db.groups[#db.groups]
+    local g = CopyTable(from or GROUP_DEFAULTS)
+    g.id = db.nextGroup
+    db.nextGroup = db.nextGroup + 1
+    g.name = from and (from.name .. " copy") or ("Group " .. g.id)
+    g.color = GroupColour(g.id)
+    g.point = "CENTER"
+    g.x = last and last.x or 0
+    g.y = (last and last.y or 120) - (last and last.size or 96) / 2 - g.size / 2 - 50
+    db.groups[#db.groups + 1] = g
+    FlashCD.ApplyLayout()
+    return g.id
+end
+
+-- Delete a group (never the last one); its spells move to the first group
+function FlashCD.DeleteGroup(id)
+    local db = FlashCD.db
+    if #db.groups <= 1 then return end
+    for i, g in ipairs(db.groups) do
+        if g.id == id then table.remove(db.groups, i) break end
+    end
+    for _, e in pairs(db.spells) do
+        if type(e) == "table" and e.group == id then e.group = nil end
+    end
+    FlashCD.ApplyLayout()
+end
+
+-- How many tracked spells flash in group g
+function FlashCD.CountInGroup(g)
+    local n = 0
+    for key in pairs(FlashCD.db.spells) do
+        if FlashCD.GroupOf(key) == g then n = n + 1 end
+    end
+    return n
+end
+
+---------------------------------------------------------------------------
+-- Flash display: per group an anchor (the spot the icons are placed from)
+-- and a row of icons. While unlocked, a mover box per group shows the
+-- group's full size (all its icons) and can be dragged or nudged.
+---------------------------------------------------------------------------
+local displays = {}   -- [group id] = { anchor, mover, active = {icon frames}, g = group }
+local pool = {}
+local GAP = 8
+local SNAP = 25       -- grid spacing in pixels (from the middle of the screen)
+
+-- Where icon i (1-based) of n sits, relative to the anchor's centre
+local function IconOffset(g, i, n)
+    local size, k = g.size, i - 1
+    local textH = g.fontSize + 6
+    local vstep = size + GAP + (g.showName and textH or 0) + (g.readyText and textH or 0)
+    if g.grow == "right" then return k * (size + GAP), 0
+    elseif g.grow == "left" then return -k * (size + GAP), 0
+    elseif g.grow == "up" then return 0, k * vstep
+    elseif g.grow == "down" then return 0, -k * vstep end
+    local total = n * size + (n - 1) * GAP
+    return -total / 2 + size / 2 + k * (size + GAP), 0
+end
+
+-- Save a group's position from where its anchor should be (screen offsets
+-- from the middle), snapped to the grid when that's on
+local function SetGroupPosition(g, x, y, snap)
+    if snap then
+        x = math.floor(x / SNAP + 0.5) * SNAP
+        y = math.floor(y / SNAP + 0.5) * SNAP
+    end
+    g.point = "CENTER"
+    g.x = math.floor(x + 0.5)
+    g.y = math.floor(y + 0.5)
     FlashCD.ApplyLayout()
     if FlashCD.OnPositionChanged then FlashCD.OnPositionChanged() end
-end)
+end
 
-local pool, active = {}, {}
-local GAP = 8
+local function MoverDragStop(self)
+    self:StopMovingOrSizing()
+    local d = self.display
+    local cx, cy = self:GetCenter()
+    local ux, uy = UIParent:GetCenter()
+    -- the mover's centre is offset from the anchor by the footprint's centre
+    SetGroupPosition(d.g, cx - ux - self.offX, cy - uy - self.offY, FlashCD.db.snap)
+end
 
-local function Layout()
-    local db = FlashCD.db
-    local size, n = db.size, #active
-    local textH = db.fontSize + 6
-    local vstep = size + GAP + (db.showName and textH or 0) + (db.readyText and textH or 0)
-    local total = n * size + (n - 1) * GAP
-    local vertical = db.grow == "up" or db.grow == "down"
-    for i, f in ipairs(active) do
-        local k = i - 1
-        local x, y = 0, 0
-        if db.grow == "right" then x = k * (size + GAP)
-        elseif db.grow == "left" then x = -k * (size + GAP)
-        elseif db.grow == "up" then y = k * vstep
-        elseif db.grow == "down" then y = -k * vstep
-        else x = -total / 2 + size / 2 + k * (size + GAP) end
-        f:SetSize(size, size)
-        f.name:SetWidth(vertical and size * 3 or size + GAP)
+-- Arrow keys nudge the group under the mouse: 1 pixel, 10 with Shift
+local NUDGE = { UP = { 0, 1 }, DOWN = { 0, -1 }, LEFT = { -1, 0 }, RIGHT = { 1, 0 } }
+local function MoverKeyDown(self, key)
+    local step = NUDGE[key]
+    if self.SetPropagateKeyboardInput and not InCombatLockdown() then
+        pcall(self.SetPropagateKeyboardInput, self, not step)
+    end
+    if not step then return end
+    local n = IsShiftKeyDown() and 10 or 1
+    local g = self.display.g
+    SetGroupPosition(g, g.x + step[1] * n, g.y + step[2] * n, false)
+end
+
+local function MoverEnter(self)
+    if not InCombatLockdown() then self:EnableKeyboard(true) end
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText(self.display.g.name, 1, 1, 1)
+    GameTooltip:AddLine("Drag to move. Arrow keys: 1 pixel (Shift: 10).", nil, nil, nil, true)
+    GameTooltip:Show()
+end
+
+local function MoverLeave(self)
+    if not InCombatLockdown() then self:EnableKeyboard(false) end
+    GameTooltip:Hide()
+end
+
+local function GetDisplay(g)
+    local d = displays[g.id]
+    if d then d.g = g return d end
+
+    local a = CreateFrame("Frame", nil, UIParent)
+    a:SetSize(1, 1)
+
+    local m = CreateFrame("Frame", "FlashCDMover" .. g.id, UIParent)
+    m:SetClampedToScreen(true)
+    m:SetMovable(true)
+    m:RegisterForDrag("LeftButton")
+    m:SetFrameStrata("FULLSCREEN_DIALOG")
+    m:Hide()
+    m.bg = m:CreateTexture(nil, "BACKGROUND")
+    m.bg:SetPoint("TOPLEFT", -4, 4)
+    m.bg:SetPoint("BOTTOMRIGHT", 4, -4)
+    m.bg:SetColorTexture(0, 0.6, 1, 0.3)
+    m.ghosts = {}
+    m.label = m:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    m.label:SetPoint("BOTTOM", m, "TOP", 0, 6)
+    m:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    m:SetScript("OnDragStop", MoverDragStop)
+    m:SetScript("OnKeyDown", MoverKeyDown)
+    m:SetScript("OnEnter", MoverEnter)
+    m:SetScript("OnLeave", MoverLeave)
+
+    d = { anchor = a, mover = m, active = {}, g = g }
+    m.display = d
+    displays[g.id] = d
+    return d
+end
+
+-- Size the mover to the group's whole row (max icons, grow direction) and
+-- fill it with placeholder icons
+local function LayoutMover(d)
+    local g, m = d.g, d.mover
+    local n = math.max(1, g.maxIcons)
+    local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
+    for i = 1, n do
+        local x, y = IconOffset(g, i, n)
+        minX, maxX = math.min(minX, x), math.max(maxX, x)
+        minY, maxY = math.min(minY, y), math.max(maxY, y)
+    end
+    m.offX, m.offY = (minX + maxX) / 2, (minY + maxY) / 2
+    m:SetSize(maxX - minX + g.size, maxY - minY + g.size)
+    m:ClearAllPoints()
+    m:SetPoint("CENTER", d.anchor, "CENTER", m.offX, m.offY)
+    for i = 1, math.max(n, #m.ghosts) do
+        local t = m.ghosts[i]
+        if i <= n then
+            if not t then
+                t = m:CreateTexture(nil, "ARTWORK")
+                t:SetTexture(134400)   -- question mark icon
+                t:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+                m.ghosts[i] = t
+            end
+            local x, y = IconOffset(g, i, n)
+            t:SetSize(g.size, g.size)
+            t:ClearAllPoints()
+            t:SetPoint("CENTER", m, "CENTER", x - m.offX, y - m.offY)
+            t:SetAlpha(i == 1 and 0.9 or 0.45)
+            t:Show()
+        elseif t then
+            t:Hide()
+        end
+    end
+    m.label:SetText(g.name)
+    local c = g.color or GROUP_COLOURS[1]
+    m.bg:SetColorTexture(c.r, c.g, c.b, 0.3)
+    m.label:SetTextColor(c.r, c.g, c.b)
+end
+
+---------------------------------------------------------------------------
+-- Grid shown while unlocked: a line every SNAP pixels from the middle,
+-- brighter every 4th, and the centre lines in red
+---------------------------------------------------------------------------
+local grid
+local function ShowGrid(on)
+    if not on then
+        if grid then grid:Hide() end
+        return
+    end
+    if not grid then
+        grid = CreateFrame("Frame", nil, UIParent)
+        grid:SetAllPoints(UIParent)
+        grid:SetFrameStrata("BACKGROUND")
+        grid.lines = {}
+    end
+    for _, t in ipairs(grid.lines) do t:Hide() end
+    local w, h = UIParent:GetWidth() or 0, UIParent:GetHeight() or 0
+    local used = 0
+    local function Line(vertical, offset)
+        used = used + 1
+        local t = grid.lines[used]
+        if not t then
+            t = grid:CreateTexture(nil, "BACKGROUND")
+            grid.lines[used] = t
+        end
+        local idx = math.floor(math.abs(offset) / SNAP + 0.5)
+        if offset == 0 then t:SetColorTexture(1, 0.2, 0.2, 0.6)
+        elseif idx % 4 == 0 then t:SetColorTexture(1, 1, 1, 0.18)
+        else t:SetColorTexture(1, 1, 1, 0.07) end
+        t:ClearAllPoints()
+        if vertical then
+            t:SetSize(1, h)
+            t:SetPoint("CENTER", grid, "CENTER", offset, 0)
+        else
+            t:SetSize(w, 1)
+            t:SetPoint("CENTER", grid, "CENTER", 0, offset)
+        end
+        t:Show()
+    end
+    for i = 0, math.floor(w / 2 / SNAP) do
+        Line(true, i * SNAP)
+        if i > 0 then Line(true, -i * SNAP) end
+    end
+    for i = 0, math.floor(h / 2 / SNAP) do
+        Line(false, i * SNAP)
+        if i > 0 then Line(false, -i * SNAP) end
+    end
+    grid:Show()
+end
+
+local function Layout(d)
+    local g, n = d.g, #d.active
+    local vertical = g.grow == "up" or g.grow == "down"
+    for i, f in ipairs(d.active) do
+        local x, y = IconOffset(g, i, n)
+        f:SetSize(g.size, g.size)
+        f.name:SetWidth(vertical and g.size * 3 or g.size + GAP)
         f:ClearAllPoints()
-        f:SetPoint("CENTER", anchor, "CENTER", x, y)
+        f:SetPoint("CENTER", d.anchor, "CENTER", x, y)
     end
 end
 
 local function Release(f, skipLayout)
     f:Hide()
-    for i, a in ipairs(active) do
-        if a == f then table.remove(active, i) break end
+    local d = f.d
+    if d then
+        for i, a in ipairs(d.active) do
+            if a == f then table.remove(d.active, i) break end
+        end
+        f.d = false
+        if not skipLayout then Layout(d) end
     end
     pool[#pool + 1] = f
-    if not skipLayout then Layout() end
 end
 
 -- Draw one frame of the flash; p runs from 0 (appears) to 1 (gone)
 local function Animate(f, p)
-    local db = FlashCD.db
-    local size = f.fixedSize or db.size
+    local g = f.g
+    local size = f.fixedSize or g.size
     local sc, dy, fadeIn = 1, 0, 1
-    if db.anim == "pop" then
+    if g.anim == "pop" then
         sc = 1 + 0.25 * math.max(0, 1 - p * 4)
-    elseif db.anim == "zoom" then
+    elseif g.anim == "zoom" then
         sc = 1 + 0.6 * p
-    elseif db.anim == "bounce" then
+    elseif g.anim == "bounce" then
         sc = 1 + 0.3 * math.abs(math.sin(p * math.pi * 3)) * (1 - p) ^ 2
-    elseif db.anim == "slide" then
+    elseif g.anim == "slide" then
         local q = math.max(0, 1 - p * 5)
         dy = -size * 0.6 * q * q
         fadeIn = math.min(1, p * 6)
@@ -321,7 +617,7 @@ local function Animate(f, p)
     f.icon:SetSize(s, s)
     f.icon:SetPoint("CENTER", f, "CENTER", 0, dy)
     f.glow:SetSize(s * 1.8, s * 1.8)
-    f:SetAlpha(db.alpha * (1 - p) * fadeIn)
+    f:SetAlpha(g.alpha * (1 - p) * fadeIn)
 
     -- shine: a star burst that grows, turns and fades over the first part
     local q = p / 0.45
@@ -337,7 +633,7 @@ local function Animate(f, p)
 end
 
 local function IconOnUpdate(self, elapsed)
-    local dur = FlashCD.db.duration
+    local dur = self.g.duration
     self.t = self.t + elapsed
     if self.loop then
         -- options preview: play, pause briefly, repeat
@@ -354,9 +650,9 @@ local function IconOnUpdate(self, elapsed)
     Animate(self, self.t / dur)
 end
 
-local function ApplyFont(fs, size)
+local function ApplyFont(fs, size, outline)
     local path = STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
-    pcall(fs.SetFont, fs, path, size, OUTLINE_FLAGS[FlashCD.db.fontOutline] or "")
+    pcall(fs.SetFont, fs, path, size, OUTLINE_FLAGS[outline] or "")
 end
 
 local function NewIcon(parent)
@@ -383,97 +679,148 @@ local function NewIcon(parent)
     f.ready:SetTextColor(0.3, 1, 0.3)
     f.ready:SetText("Ready!")
     f.t = 0
-    f.loop, f.fixedSize, f.shineOn = false, false, false
+    f.loop, f.fixedSize, f.shineOn, f.d = false, false, false, false
     f:SetScript("OnUpdate", IconOnUpdate)
     return f
 end
 
--- Give an icon frame the look of a key from the current settings
-local function StyleIcon(f, key)
+-- Give an icon frame the look of key `key` in group `g`
+local function StyleIcon(f, key, g)
     local db = FlashCD.db
     local entry = type(db.spells[key]) == "table" and db.spells[key] or {}
-    f.key = key
+    f.key, f.g = key, g
     f.icon:SetTexture(FlashCD.KeyIcon(key) or 134400)
-    ApplyFont(f.name, db.fontSize)
-    ApplyFont(f.ready, math.floor(db.fontSize * 0.9 + 0.5))
-    f.name:SetText(db.showName and FlashCD.KeyName(key) or "")
-    f.ready:SetShown(db.readyText)
-    local c = entry.color or db.glowColor
+    ApplyFont(f.name, g.fontSize, g.fontOutline)
+    ApplyFont(f.ready, math.floor(g.fontSize * 0.9 + 0.5), g.fontOutline)
+    f.name:SetText(g.showName and FlashCD.KeyName(key) or "")
+    f.ready:SetShown(g.readyText)
+    local c = entry.color or g.glowColor
     f.glow:SetVertexColor(c.r, c.g, c.b)
-    f.glow:SetShown(db.glow)
-    f.shineOn = db.shine
+    f.glow:SetShown(g.glow)
+    f.shineOn = g.shine
 end
 
 -- A looping flash for the options preview; its size is capped to fit the box
 function FlashCD.NewPreview(parent)
     local f = NewIcon(parent)
     f.loop = true
-    f.Update = function(self, key, maxSize)
-        StyleIcon(self, key)
-        self.fixedSize = math.min(FlashCD.db.size, maxSize)
+    f.g = FlashCD.db.groups[1]
+    f.Update = function(self, key, maxSize, g)
+        StyleIcon(self, key, g)
+        self.fixedSize = math.min(g.size, maxSize)
         self:SetSize(self.fixedSize, self.fixedSize)
         self.name:SetWidth(self.fixedSize * 2.5)
     end
     return f
 end
 
-function FlashCD.Flash(key)
+-- Flash `key` in its group (or in group `g`)
+function FlashCD.Flash(key, g)
     local db = FlashCD.db
     if not FlashCD.KeyIcon(key) then return end
+    g = g or FlashCD.GroupOf(key)
+    local d = GetDisplay(g)
     local entry = type(db.spells[key]) == "table" and db.spells[key] or {}
 
     local f
-    for _, a in ipairs(active) do
+    for _, a in ipairs(d.active) do
         if a.key == key then f = a break end
     end
     if not f then
-        while #active >= math.max(1, db.maxIcons) do Release(active[1], true) end
+        while #d.active >= math.max(1, g.maxIcons) do Release(d.active[1], true) end
         f = table.remove(pool) or NewIcon()
-        active[#active + 1] = f
+        f.d = d
+        d.active[#d.active + 1] = f
     end
 
-    StyleIcon(f, key)
+    StyleIcon(f, key, g)
     f.t = 0
     f:Show()
     IconOnUpdate(f, 0)
-    Layout()
+    Layout(d)
 
     FlashCD.PlaySound(entry.sound or db.sound)
 end
 
 function FlashCD.ApplyLayout()
-    local db = FlashCD.db
-    anchor:SetSize(db.size, db.size)
-    anchor:ClearAllPoints()
-    anchor:SetPoint("CENTER", UIParent, db.point or "CENTER", db.x, db.y)
-    Layout()
+    local live = {}
+    local only = FlashCD.movingGroup   -- nil: all groups unlocked
+    if only and not FlashCD.GetGroupByID(only) then
+        FlashCD.unlocked, FlashCD.movingGroup, only = false, nil, nil   -- it was deleted
+    end
+    for _, g in ipairs(FlashCD.db.groups) do
+        live[g.id] = true
+        local d = GetDisplay(g)
+        local unlocked = FlashCD.unlocked and (only == nil or only == g.id)
+        d.anchor:ClearAllPoints()
+        d.anchor:SetPoint("CENTER", UIParent, g.point or "CENTER", g.x, g.y)
+        if unlocked then LayoutMover(d) end
+        d.mover:EnableMouse(unlocked)
+        d.mover:SetShown(unlocked)
+        Layout(d)
+    end
+    -- groups that were deleted: hide their box and flashes
+    for id, d in pairs(displays) do
+        if not live[id] then
+            d.mover:Hide()
+            while d.active[1] do Release(d.active[1], true) end
+            displays[id] = nil
+        end
+    end
+    ShowGrid(FlashCD.unlocked and FlashCD.db.grid)
 end
 
+-- Unlock (or lock) every group
 function FlashCD.SetUnlocked(on)
     FlashCD.unlocked = on and true or false
-    anchor:EnableMouse(FlashCD.unlocked)
-    anchor:SetShown(FlashCD.unlocked)
+    FlashCD.movingGroup = nil
     FlashCD.ApplyLayout()
+    if FlashCD.OnUnlockChanged then FlashCD.OnUnlockChanged() end
+end
+
+-- Unlock just one group, so it can be moved on its own; again to lock it
+function FlashCD.ToggleMoveGroup(id)
+    if FlashCD.unlocked and FlashCD.movingGroup == id then
+        FlashCD.unlocked, FlashCD.movingGroup = false, nil
+    else
+        FlashCD.unlocked, FlashCD.movingGroup = true, id
+    end
+    FlashCD.ApplyLayout()
+    if FlashCD.OnUnlockChanged then FlashCD.OnUnlockChanged() end
+end
+
+-- The group being moved on its own, or nil (none, or all unlocked)
+function FlashCD.MovingGroup()
+    return FlashCD.unlocked and FlashCD.movingGroup or nil
 end
 
 function FlashCD.IsUnlocked() return FlashCD.unlocked end
 
--- Flash a few tracked things at once, ignoring every filter
+-- Flash a few tracked things in every group, ignoring every filter.
+-- A group with nothing in it shows some other spell, so you can see it.
 function FlashCD.Test()
-    local keys = {}
-    for key in pairs(FlashCD.db.spells) do
-        keys[#keys + 1] = key
-        if #keys >= math.min(3, FlashCD.db.maxIcons) then break end
-    end
-    if #keys == 0 and FlashCD.ScanSpellbook then
+    local db = FlashCD.db
+    local any
+    for key in pairs(db.spells) do any = key break end
+    if not any and FlashCD.ScanSpellbook then
         local book = FlashCD.ScanSpellbook()
-        if book[1] then keys[1] = book[1].name end
+        any = book[1] and book[1].name
     end
-    if #keys == 0 then
+    if not any then
         print("|cff33ccffFlashCD|r: nothing to test with yet.")
         return
     end
-    for _, key in ipairs(keys) do FlashCD.Flash(key) end
+    for _, g in ipairs(db.groups) do
+        local keys = {}
+        for key in pairs(db.spells) do
+            if FlashCD.GroupOf(key) == g then
+                keys[#keys + 1] = key
+                if #keys >= math.min(3, g.maxIcons) then break end
+            end
+        end
+        if #keys == 0 then keys[1] = any end
+        for _, key in ipairs(keys) do FlashCD.Flash(key, g) end
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -489,11 +836,11 @@ local function ShouldFlash(key)
     if FlashCD.unlocked then return false end
     if db.combatOnly and not UnitAffectingCombat("player") then return false end
     if db.minCD > 0 then
-        local len = lastDur[key] or BaseCooldown(key)
+        local len = lastDur[key] or CooldownLength(key)
         if len and len < db.minCD then return false end
     end
     if db.usableOnly and not ItemID(key) and C_Spell and C_Spell.IsSpellUsable then
-        local ok, usable, noMana = pcall(C_Spell.IsSpellUsable, key)
+        local ok, usable, noMana = pcall(C_Spell.IsSpellUsable, SpellRef(key))
         -- check secrecy before comparing: secret values can't be compared
         if ok and not IsSecret(usable) and usable == false
             and not (IsSecret(noMana) or noMana == true) then
@@ -513,27 +860,56 @@ local function WasRealCooldown(key)
     if not since or since == 0 then return true end
     local elapsed = GetTime() - since
     if elapsed <= GCD_MAX + 0.2 then return false end
-    local base = BaseCooldown(key)
+    local base = CooldownLength(key)
     if base then return elapsed >= base * 0.5 end
     -- no known base cooldown: a slow wand / ranged swing can last ~3 s
     return elapsed > NO_BASE_MIN
 end
 
+-- Spells the game says have no cooldown, watched in case they do have one
+-- (the game doesn't report every cooldown). [name] = true
+local candidates = {}
+
 local function Scan(silent)
-    for key in pairs(FlashCD.db.spells) do
+    local db = FlashCD.db
+    local learned
+    local function check(key, tracked)
         local now, dur = IsOnCooldown(key)
-        if now ~= nil then
-            if now == true and state[key] ~= true then
-                cdSince[key] = silent and 0 or GetTime()
+        if now == nil then return end
+        if now == true and state[key] ~= true then
+            cdSince[key] = silent and 0 or GetTime()
+        end
+        if state[key] == true and now == false and not silent and WasRealCooldown(key) then
+            if tracked then
+                if ShouldFlash(key) then FlashCD.Flash(key) end
+            elseif cdSince[key] and cdSince[key] > 0 then
+                learned = learned or {}
+                learned[#learned + 1] = { key = key, len = lastDur[key] or (GetTime() - cdSince[key]) }
             end
-            if state[key] == true and now == false and not silent
-                and WasRealCooldown(key) and ShouldFlash(key) then
-                FlashCD.Flash(key)
-            end
-            if dur then lastDur[key] = dur end
-            state[key] = now
+        end
+        if dur then lastDur[key] = dur end
+        state[key] = now
+    end
+    for key in pairs(db.spells) do check(key, true) end
+    for key in pairs(candidates) do
+        if db.spells[key] == nil then check(key, false) end
+    end
+    if not learned then return end
+
+    -- a cooldown seen on a spell the game said had none: remember it, and
+    -- track the spell unless you unticked it yourself
+    local added = false
+    for _, l in ipairs(learned) do
+        db.learnedCD[l.key] = math.floor(l.len * 2 + 0.5) / 2
+        candidates[l.key] = nil
+        if db.autoTrack and not db.removed[l.key] then
+            FlashCD.TrackKey(l.key)
+            added = true
+            print("|cff33ccffFlashCD|r: " .. l.key .. " has a cooldown, now tracking it.")
+            if ShouldFlash(l.key) then FlashCD.Flash(l.key) end
         end
     end
+    if FlashCD.OnTrackedChanged then FlashCD.OnTrackedChanged() end
 end
 
 function FlashCD.ResetState()
@@ -545,11 +921,15 @@ end
 function FlashCD.TrackKey(key)
     local db = FlashCD.db
     if type(db.spells[key]) ~= "table" then db.spells[key] = {} end
+    db.removed[key] = nil
+    candidates[key] = nil
     state[key] = (IsOnCooldown(key))
 end
 
+-- Untick a spell. It stays unticked: auto-tracking never adds it back.
 function FlashCD.UntrackKey(key)
     FlashCD.db.spells[key] = nil
+    FlashCD.db.removed[key] = true
     state[key] = nil
 end
 
@@ -586,13 +966,32 @@ function FlashCD.AutoTrack()
     if not FlashCD.ScanSpellbook then return end
     local db = FlashCD.db
     local added = false
+    wipe(candidates)
     for _, d in ipairs(FlashCD.ScanSpellbook()) do
-        if d.name and not db.known[d.name] then
-            db.known[d.name] = true
-            if db.autoTrack and FlashCD.HasCooldown(d.id) and db.spells[d.name] == nil then
-                FlashCD.TrackKey(d.name)
+        local name = d.name
+        if name and not db.known[name] then
+            db.known[name] = true
+            if db.spells[name] == nil then
+                if not FlashCD.HasCooldown(d.id, name) then
+                    -- may still get one: some spells only have a cooldown in a form
+                    db.skippedNoCD[name] = true
+                elseif db.autoTrack then
+                    FlashCD.TrackKey(name)
+                    added = true
+                end
+            end
+        elseif name and db.skippedNoCD[name] and FlashCD.HasCooldown(d.id, name) then
+            -- skipped for having no cooldown, but has one now (e.g. in a form)
+            db.skippedNoCD[name] = nil
+            if db.autoTrack and db.spells[name] == nil and not db.removed[name] then
+                FlashCD.TrackKey(name)
                 added = true
             end
+        end
+        -- watched even when unticked: the cooldown is still learned (for the
+        -- list), the spell just isn't tracked
+        if name and db.spells[name] == nil and not FlashCD.HasCooldown(d.id, name) then
+            candidates[name] = true
         end
     end
     if added and FlashCD.OnTrackedChanged then FlashCD.OnTrackedChanged() end
@@ -607,7 +1006,7 @@ local function InitDB()
 
     if not FlashCDCharDB then
         if account.spells then
-            -- version 1 kept everything account-wide: hand it to this character
+            -- the first versions kept everything account-wide: hand it to this character
             FlashCDCharDB = {}
             for k, v in pairs(account) do
                 if k ~= "template" then FlashCDCharDB[k] = CopyTable(v) end
@@ -625,6 +1024,28 @@ local function InitDB()
     for k, v in pairs(DEFAULTS) do
         if db[k] == nil then db[k] = CopyTable(v) end
     end
+
+    -- before groups the look was stored flat: make it group 1
+    if type(db.groups) ~= "table" or #db.groups == 0 then
+        local g = { id = 1 }
+        for k in pairs(GROUP_DEFAULTS) do
+            if k ~= "name" and db[k] ~= nil then g[k] = db[k] end
+        end
+        db.groups = { g }
+        db.nextGroup = 2
+    end
+    for k in pairs(GROUP_DEFAULTS) do db[k] = nil end
+    local maxID = 0
+    for i, g in ipairs(db.groups) do
+        if type(g.id) ~= "number" then g.id = i end
+        maxID = math.max(maxID, g.id)
+        for k, v in pairs(GROUP_DEFAULTS) do
+            if g[k] == nil then g[k] = CopyTable(v) end
+        end
+        if i > 1 and g.name == GROUP_DEFAULTS.name then g.name = "Group " .. g.id end
+        if type(g.color) ~= "table" then g.color = GroupColour(g.id) end
+    end
+    if type(db.nextGroup) ~= "number" or db.nextGroup <= maxID then db.nextGroup = maxID + 1 end
     FlashCD.db = db
 end
 
@@ -632,7 +1053,20 @@ end
 -- sound / colour / mute) and the list of already-seen spells are kept.
 function FlashCD.ResetSettings()
     local db = FlashCD.db
-    for _, k in ipairs(TEMPLATE_KEYS) do db[k] = CopyTable(DEFAULTS[k]) end
+    for k, v in pairs(DEFAULTS) do
+        if k ~= "spells" and k ~= "known" and k ~= "removed" and k ~= "learnedCD"
+            and k ~= "skippedNoCD" and k ~= "overrides" and k ~= "window" then
+            db[k] = CopyTable(v)
+        end
+    end
+    -- groups and their names are kept; their look goes back to the default,
+    -- each a little lower than the one before so they don't overlap
+    for i, g in ipairs(db.groups) do
+        local id, name = g.id, g.name
+        for k, v in pairs(GROUP_DEFAULTS) do g[k] = CopyTable(v) end
+        g.id, g.name = id, name
+        g.y = GROUP_DEFAULTS.y - (i - 1) * 170
+    end
     if FlashCD.unlocked then FlashCD.SetUnlocked(false) end
     FlashCD.ApplyLayout()
     if FlashCD.UpdateMinimapButton then FlashCD.UpdateMinimapButton() end
@@ -664,6 +1098,7 @@ events:RegisterEvent("PLAYER_LOGOUT")
 events:RegisterEvent("SPELL_UPDATE_COOLDOWN")
 events:RegisterEvent("BAG_UPDATE_COOLDOWN")
 events:RegisterEvent("SPELLS_CHANGED")
+events:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
 events:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" then
         if arg1 ~= ADDON then return end
@@ -683,7 +1118,7 @@ events:SetScript("OnEvent", function(self, event, arg1)
     elseif event == "PLAYER_LOGOUT" then
         SaveTemplate()
     else
-        if event == "SPELLS_CHANGED" then FlashCD.AutoTrack() end
+        if event == "SPELLS_CHANGED" or event == "UPDATE_SHAPESHIFT_FORM" then FlashCD.AutoTrack() end
         Scan(false)
     end
 end)
@@ -691,6 +1126,44 @@ end)
 ---------------------------------------------------------------------------
 -- Slash commands
 ---------------------------------------------------------------------------
+-- /flashcd spell <name>: print what FlashCD sees for matching spells
+function FlashCD.DebugSpell(filter)
+    local P = function(...) print("|cff33ccffFlashCD|r:", ...) end
+    filter = (filter or ""):lower()
+    if filter == "" then P("usage: /flashcd spell <part of a spell name>") return end
+    local function Show(v)
+        if v == nil then return "-" end
+        if IsSecret(v) then return "secret" end
+        return tostring(v)
+    end
+    local function Base(id)
+        if not GetSpellBaseCooldown or not id then return "-" end
+        local ok, ms = pcall(GetSpellBaseCooldown, id)
+        return ok and Show(ms) or "error"
+    end
+    local function CD(ref)
+        if not (C_Spell and C_Spell.GetSpellCooldown) then return "-" end
+        local ok, i = pcall(C_Spell.GetSpellCooldown, ref)
+        if not ok or type(i) ~= "table" then return "none" end
+        return "active=" .. Show(i.isActive) .. " gcd=" .. Show(i.isOnGCD) .. " dur=" .. Show(i.duration)
+    end
+    local db, found = FlashCD.db, 0
+    for _, d in ipairs(FlashCD.ScanSpellbook and FlashCD.ScanSpellbook() or {}) do
+        if tostring(d.name):lower():find(filter, 1, true) then
+            found = found + 1
+            local name = d.name
+            local o = OverrideOf(d.id)
+            P(string.format("|cffffd100%s|r  spellbook id %s (base cd %s ms)  form version now %s (base cd %s ms)  saved form version %s",
+                name, Show(d.id), Base(d.id), Show(o), Base(o), Show(db.overrides[name])))
+            P("   cooldown by id: " .. CD(d.id) .. "   by what FlashCD uses (" .. Show(SpellRef(name)) .. "): " .. CD(SpellRef(name)))
+            P(string.format("   tracked %s  unticked %s  seen %s  skipped(no cd) %s  learned cd %s  tab %s",
+                Show(db.spells[name] ~= nil), Show(db.removed[name]), Show(db.known[name]),
+                Show(db.skippedNoCD[name]), Show(db.learnedCD[name]), Show(d.tab)))
+        end
+    end
+    if found == 0 then P("no spellbook spell matches '" .. filter .. "'") end
+end
+
 SLASH_FLASHCD1 = "/flashcd"
 SLASH_FLASHCD2 = "/fcd"
 SlashCmdList.FLASHCD = function(msg)
@@ -698,6 +1171,8 @@ SlashCmdList.FLASHCD = function(msg)
     if msg == "unlock" or msg == "lock" or msg == "move" then
         FlashCD.SetUnlocked(not FlashCD.unlocked)
         if FlashCD.OnPositionChanged then FlashCD.OnPositionChanged() end
+    elseif msg:match("^spell") then
+        FlashCD.DebugSpell(msg:match("^spell%s*(.*)$"))
     elseif msg == "minimap" then
         FlashCD.db.minimap.hide = not FlashCD.db.minimap.hide
         if FlashCD.UpdateMinimapButton then FlashCD.UpdateMinimapButton() end
