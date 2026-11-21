@@ -9,19 +9,21 @@ Author: Skeide
 ## Features
 
 - Its own settings window (not squeezed into the game's Settings): resizable and movable, it can stay open while you play. A sidebar lists the pages and your groups; click a group to edit it, or drag a tracked spell onto it to move the spell there. Esc closes it. Two themes: Modern (flat and dark) and WoW Forever (the game's own dialog look), chosen on the Alerts & moving page; the window switches right away.
-
 - Every spellbook spell with a cooldown is tracked automatically, and newly learned spells are added as you learn them. A spell you remove stays removed, even when you learn a new rank.
 - Spells are tracked by name, so all ranks count as one spell.
 - Items with a "Use:" effect (trinkets, potions) can be tracked too.
 - Groups: up to 10 display groups, each with a colour of its own, each with its own position, size and look, for example big icons for important cooldowns and small ones for the rest. The sidebar lists them all; each group's page has its name, Move, Test, Copy and Delete. Pick a spell's group in its row, or move every spell the list shows to a group at once.
-- Moving: click Move on a group's page to show just that group's box, or Unlock all (Alerts & moving) for every group. The settings window hides while you move groups, and a small bar at the top of the screen has a Done button that brings it back. Each box shows one icon where the group's flashes start. Drag it (it snaps to a 25-pixel grid shown on screen, both can be turned off), or hover it and nudge it with the arrow keys (1 pixel, Shift: 10).
+- Moving: click Move on a group's page to show just that group's box, or Unlock all (Alerts & moving) for every group. The settings window hides while you move groups, and a small bar at the top of the screen has a Done button that brings it back. Each box shows one icon where the group's flashes start. Drag it (it snaps to a 25-pixel grid shown on screen, both can be turned off), or nudge it with the arrows around it (also in combat) or the arrow keys while hovering it (1 pixel, Shift: 10).
 - Several icons show at once when more than one spell comes ready; the row can be centred or grow left, right, up or down.
 - Appearance: size, opacity, fade time, animation (pop, zoom, bounce, slide in, plain), glow border and colour, a shine burst, the spell name and a "Ready!" label with font size and outline. A live preview in the options shows the result as you change it.
-- Filters: only in combat, a minimum cooldown length, and skipping spells you can't cast in your current form.
+- Filters: only in combat, a minimum cooldown length, and skipping spells you can't cast in your current form. A spell can also be set to flash only while you're in a form (bear, cat and so on).
+- An optional warning: a grey "Soon" flash a few seconds before a cooldown is ready.
+- Recent flashes: a page listing what flashed, what didn't and why (muted, not in combat, wrong form and so on).
 - The spell list shows every spell (or item) in one place: tick to track it. Each row shows its cooldown, its group (in the group's colour) and markers for its own settings. Filter by spellbook tab, tracked status or group, and sort by name or cooldown.
-- Click a spell to see its settings on the right: group, sound, mute and glow colour. Ctrl-click or Shift-click (or Select all) to change several spells at once.
+- Click a spell to see its settings on the right: group, sound, mute, "only in a form" and glow colour. Ctrl-click or Shift-click (or Select all) to change several spells at once.
 - A minimap button (drag it around the edge) and an addon compartment entry: left-click opens the options, right-click shows a test flash.
-- Settings are saved per character. A new character starts with the display settings of the last character you logged out on.
+- Settings are saved per character. A new character starts with the settings of the last character you logged out on.
+- Profiles & sharing: copy settings (and, if you like, tracked spells) from another of your characters, or export them as a line of text to send to someone, who imports it. Imported text is read by FlashCD's own parser; it is never run as code.
 
 ## Usage
 
@@ -40,11 +42,15 @@ Author: Skeide
 |---|---|
 | `FlashCD.toc` | Addon metadata and saved variables |
 | `Core.lua` | Cooldown tracking, the flash display, saved settings and slash commands |
-| `Options.lua` | The FlashCD settings window, plus the spellbook and item scanning |
+| `Widgets.lua` | The controls the settings window is built from, in both themes |
+| `Scan.lua` | Reading the spellbook and bags |
+| `Options.lua` | The FlashCD settings window and its pages |
 | `Minimap.lua` | The minimap button and the addon compartment entry |
 | `Media/Icon.tga` | The addon icon used in game (128×128, 32-bit uncompressed TGA) |
 | `Media/icon.png` | The same icon as a PNG, used by this README |
 | `tools/make_icon.py` | Script that draws the icon (needs Pillow) |
+| `tools/release.py` | Builds `dist/FlashCD-<version>.zip` to share (only the files the game needs) |
+| `tests/` | Tests run outside the game against a small fake of the WoW API: `python tests/run_tests.py` (needs the `lupa` package) |
 
 ## Notes
 
@@ -54,4 +60,5 @@ Author: Skeide
 - Some spells (like Faerie Fire on WoW Forever) are replaced by a form version with a cooldown, for example in bear form. FlashCD checks for these when you log in, learn spells or shapeshift, remembers the form version and tracks it, also out of the form.
 - Some spells have a cooldown the game doesn't report. FlashCD watches spells without a reported cooldown, and the first time one stays on cooldown for more than about 3 seconds it remembers the length and starts tracking the spell (unless you unticked it). From then on it shows in the list with that cooldown.
 - Spells are looked up by their spellbook ID, so names with brackets, such as "Faerie Fire (Feral)", work.
+- FlashCD checks cooldowns when the game reports a change, every 0.1 s for spells that are on cooldown, and once a second for the rest, so it stays light.
 - Short lockouts (the global cooldown, wand and ranged shots) are not flashed. A spell must stay on cooldown for at least half its base cooldown, or more than about 3 seconds when the base cooldown is unknown.

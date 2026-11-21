@@ -3,7 +3,7 @@
 ## Notes: Flashes a spell's icon in the middle of the screen when it comes off cooldown.
 ## Author: Skeide
 ## IconTexture: Interface\AddOns\FlashCD\Media\Icon
-## Version: 0.0.3
+## Version: 0.0.4
 ## SavedVariables: FlashCDDB
 ## SavedVariablesPerCharacter: FlashCDCharDB
 ## AddonCompartmentFunc: FlashCD_OnAddonCompartmentClick
@@ -11,5 +11,7 @@
 ## AddonCompartmentFuncOnLeave: FlashCD_OnAddonCompartmentLeave
 
 Core.lua
+Widgets.lua
+Scan.lua
 Options.lua
 Minimap.lua

@@ -20,7 +20,7 @@ local NO_BASE_MIN = 3.2   -- shortest real cooldown accepted when the base coold
 
 -- per-character settings; FlashCD.db points at the active table
 local DEFAULTS = {
-    spells     = {},      -- [key] = { muted, sound, color, group = group id }
+    spells     = {},      -- [key] = { muted, sound, color, group = group id, formOnly }
     known      = {},      -- [spell name] = true for every spell already seen
     removed    = {},      -- [key] = true: unticked by you, never auto-tracked again
     learnedCD  = {},      -- [spell name] = seconds: cooldowns the game doesn't report
@@ -30,6 +30,7 @@ local DEFAULTS = {
     sound      = "none",
     combatOnly = false,
     minCD      = 0,       -- seconds; shorter cooldowns don't flash
+    preWarn    = 0,       -- seconds before ready to show a "Soon" flash (0 = off)
     usableOnly = true,    -- skip spells that can't be cast now (wrong form etc.)
     autoTrack  = true,
     cdOnly     = true,
@@ -83,7 +84,7 @@ local GROUP_DEFAULTS = {
 -- settings copied to new characters
 local TEMPLATE_KEYS = {
     "groups", "nextGroup", "sound", "combatOnly", "minCD", "usableOnly",
-    "autoTrack", "cdOnly", "minimap", "grid", "snap", "theme",
+    "autoTrack", "cdOnly", "minimap", "grid", "snap", "theme", "preWarn",
 }
 
 FlashCD.SOUNDS = {
@@ -468,12 +469,31 @@ local function GetDisplay(g)
     m.bg:SetColorTexture(0, 0.6, 1, 0.3)
     m.ghosts = {}
     m.label = m:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    m.label:SetPoint("BOTTOM", m, "TOP", 0, 6)
+    m.label:SetPoint("BOTTOM", m, "TOP", 0, 24)
     m:SetScript("OnDragStart", function(self) self:StartMoving() end)
     m:SetScript("OnDragStop", MoverDragStop)
     m:SetScript("OnKeyDown", MoverKeyDown)
     m:SetScript("OnEnter", MoverEnter)
     m:SetScript("OnLeave", MoverLeave)
+
+    -- arrow buttons around the box: nudge 1 pixel (Shift: 10). Clicks work in
+    -- combat too, where the game doesn't let addons read the arrow keys.
+    local BS = "Interface\\Buttons\\"
+    for _, a in ipairs({
+        { "UP",    "BOTTOM", "TOP",    0, 2,  BS .. "UI-ScrollBar-ScrollUpButton-" },
+        { "DOWN",  "TOP",    "BOTTOM", 0, -2, BS .. "UI-ScrollBar-ScrollDownButton-" },
+        { "LEFT",  "RIGHT",  "LEFT",   -2, 0, BS .. "UI-SpellbookIcon-PrevPage-" },
+        { "RIGHT", "LEFT",   "RIGHT",  2, 0,  BS .. "UI-SpellbookIcon-NextPage-" },
+    }) do
+        local b = CreateFrame("Button", nil, m)
+        b:SetSize(20, 20)
+        b:SetPoint(a[2], m, a[3], a[4], a[5])
+        b:SetNormalTexture(a[6] .. "Up")
+        b:SetPushedTexture(a[6] .. "Down")
+        b:SetHighlightTexture(BS .. "ButtonHilight-Square", "ADD")
+        b:SetScript("OnClick", function() MoverKeyDown(m, a[1]) end)
+        m["arrow" .. a[1]] = b
+    end
 
     d = { anchor = a, mover = m, active = {}, g = g }
     m.display = d
@@ -693,7 +713,10 @@ local function StyleIcon(f, key, g)
     ApplyFont(f.name, g.fontSize, g.fontOutline)
     ApplyFont(f.ready, math.floor(g.fontSize * 0.9 + 0.5), g.fontOutline)
     f.name:SetText(g.showName and FlashCD.KeyName(key) or "")
+    f.ready:SetText("Ready!")
+    f.ready:SetTextColor(0.3, 1, 0.3)
     f.ready:SetShown(g.readyText)
+    f.icon:SetDesaturated(false)
     local c = entry.color or g.glowColor
     f.glow:SetVertexColor(c.r, c.g, c.b)
     f.glow:SetShown(g.glow)
@@ -714,8 +737,9 @@ function FlashCD.NewPreview(parent)
     return f
 end
 
--- Flash `key` in its group (or in group `g`)
-function FlashCD.Flash(key, g)
+-- Flash `key` in its group (or in group `g`). With `soon`, it is the warning
+-- before the cooldown is ready: grey icon, "Soon", no sound.
+function FlashCD.Flash(key, g, soon)
     local db = FlashCD.db
     if not FlashCD.KeyIcon(key) then return end
     g = g or FlashCD.GroupOf(key)
@@ -734,12 +758,18 @@ function FlashCD.Flash(key, g)
     end
 
     StyleIcon(f, key, g)
+    if soon then
+        f.ready:SetText("Soon")
+        f.ready:SetTextColor(1, 0.6, 0.1)
+        f.ready:Show()
+        f.icon:SetDesaturated(true)
+    end
     f.t = 0
     f:Show()
     IconOnUpdate(f, 0)
     Layout(d)
 
-    FlashCD.PlaySound(entry.sound or db.sound)
+    if not soon then FlashCD.PlaySound(entry.sound or db.sound) end
 end
 
 function FlashCD.ApplyLayout()
@@ -829,25 +859,52 @@ end
 local state = {}     -- [key] = last known on-cooldown state
 local lastDur = {}   -- [key] = last readable cooldown length
 
+-- Whether a spell that just came ready should flash; when not, also why
 local function ShouldFlash(key)
     local db = FlashCD.db
     local entry = db.spells[key]
-    if type(entry) == "table" and entry.muted then return false end
-    if FlashCD.unlocked then return false end
-    if db.combatOnly and not UnitAffectingCombat("player") then return false end
+    if type(entry) == "table" and entry.muted then return false, "muted" end
+    if FlashCD.unlocked then return false, "groups are unlocked" end
+    if db.combatOnly and not UnitAffectingCombat("player") then return false, "not in combat" end
+    if type(entry) == "table" and entry.formOnly and GetShapeshiftForm and (GetShapeshiftForm() or 0) == 0 then
+        return false, "not in a form"
+    end
     if db.minCD > 0 then
         local len = lastDur[key] or CooldownLength(key)
-        if len and len < db.minCD then return false end
+        if len and len < db.minCD then return false, "shorter than the minimum cooldown" end
     end
     if db.usableOnly and not ItemID(key) and C_Spell and C_Spell.IsSpellUsable then
         local ok, usable, noMana = pcall(C_Spell.IsSpellUsable, SpellRef(key))
         -- check secrecy before comparing: secret values can't be compared
         if ok and not IsSecret(usable) and usable == false
             and not (IsSecret(noMana) or noMana == true) then
-            return false   -- wrong form / stance, not just short on mana/rage/energy
+            return false, "can't be cast now (form or stance)"
         end
     end
     return true
+end
+
+-- Recent flashes, newest first (not saved): { time, key, kind, text }
+-- kind: "flash", "skip", "soon" or "learn"
+FlashCD.log = {}
+local LOG_MAX = 60
+local function Log(key, kind, text)
+    local log = FlashCD.log
+    table.insert(log, 1, { time = date and date("%H:%M:%S") or "", key = key, kind = kind, text = text })
+    while #log > LOG_MAX do table.remove(log) end
+    if FlashCD.OnLog then FlashCD.OnLog() end
+end
+FlashCD.Log = Log
+
+local warned = {}   -- [key] = true once the "Soon" warning showed for this cooldown
+
+-- Seconds left on a cooldown, from when it started and how long it is
+-- (works in combat too, where the game hides the times); nil if unknown
+local function TimeLeft(key, since)
+    if not since or since == 0 then return nil end
+    local len = lastDur[key] or CooldownLength(key)
+    if not len then return nil end
+    return len - (GetTime() - since)
 end
 
 local cdSince = {}   -- [key] = GetTime() when it went on cooldown (0 = unknown)
@@ -870,7 +927,9 @@ end
 -- (the game doesn't report every cooldown). [name] = true
 local candidates = {}
 
-local function Scan(silent)
+-- Check cooldowns. A full scan checks every tracked and watched spell; with
+-- `busyOnly` only the ones on cooldown right now (cheap, run often).
+local function Scan(silent, busyOnly)
     local db = FlashCD.db
     local learned
     local function check(key, tracked)
@@ -878,10 +937,29 @@ local function Scan(silent)
         if now == nil then return end
         if now == true and state[key] ~= true then
             cdSince[key] = silent and 0 or GetTime()
+            warned[key] = nil
+        end
+        -- the warning a few seconds before it's ready
+        if now == true and tracked and db.preWarn > 0 and not warned[key] and not silent then
+            local left = TimeLeft(key, cdSince[key])
+            if left and left <= db.preWarn and left > 0.3 then
+                warned[key] = true
+                local ok, why = ShouldFlash(key)
+                if ok then
+                    FlashCD.Flash(key, nil, true)
+                    Log(key, "soon", string.format("ready in %.0f s", left))
+                end
+            end
         end
         if state[key] == true and now == false and not silent and WasRealCooldown(key) then
             if tracked then
-                if ShouldFlash(key) then FlashCD.Flash(key) end
+                local ok, why = ShouldFlash(key)
+                if ok then
+                    FlashCD.Flash(key)
+                    Log(key, "flash", "flashed in " .. FlashCD.GroupOf(key).name)
+                else
+                    Log(key, "skip", "not flashed: " .. why)
+                end
             elseif cdSince[key] and cdSince[key] > 0 then
                 learned = learned or {}
                 learned[#learned + 1] = { key = key, len = lastDur[key] or (GetTime() - cdSince[key]) }
@@ -890,9 +968,17 @@ local function Scan(silent)
         if dur then lastDur[key] = dur end
         state[key] = now
     end
-    for key in pairs(db.spells) do check(key, true) end
-    for key in pairs(candidates) do
-        if db.spells[key] == nil then check(key, false) end
+    if busyOnly then
+        local busy = {}
+        for key, on in pairs(state) do
+            if on == true and (db.spells[key] ~= nil or candidates[key]) then busy[#busy + 1] = key end
+        end
+        for _, key in ipairs(busy) do check(key, db.spells[key] ~= nil) end
+    else
+        for key in pairs(db.spells) do check(key, true) end
+        for key in pairs(candidates) do
+            if db.spells[key] == nil then check(key, false) end
+        end
     end
     if not learned then return end
 
@@ -906,7 +992,10 @@ local function Scan(silent)
             FlashCD.TrackKey(l.key)
             added = true
             print("|cff33ccffFlashCD|r: " .. l.key .. " has a cooldown, now tracking it.")
+            Log(l.key, "learn", string.format("found a %g s cooldown, now tracked", db.learnedCD[l.key]))
             if ShouldFlash(l.key) then FlashCD.Flash(l.key) end
+        else
+            Log(l.key, "learn", string.format("found a %g s cooldown (not tracked)", db.learnedCD[l.key]))
         end
     end
     if FlashCD.OnTrackedChanged then FlashCD.OnTrackedChanged() end
@@ -1015,16 +1104,25 @@ local function InitDB()
             FlashCDCharDB = CopyTable(account.template or {})
         end
     end
-    -- account table now only keeps the template for new characters
+    -- account table keeps only the template for new characters and the
+    -- saved settings of each character (to copy between them)
     for k in pairs(account) do
-        if k ~= "template" then account[k] = nil end
+        if k ~= "template" and k ~= "chars" then account[k] = nil end
     end
+    if type(account.chars) ~= "table" then account.chars = {} end
 
     local db = FlashCDCharDB
     for k, v in pairs(DEFAULTS) do
         if db[k] == nil then db[k] = CopyTable(v) end
     end
 
+    FlashCD.NormalizeGroups(db)
+    FlashCD.db = db
+end
+
+-- Make sure db.groups is a usable list of groups (also after copying or
+-- importing settings)
+function FlashCD.NormalizeGroups(db)
     -- before groups the look was stored flat: make it group 1
     if type(db.groups) ~= "table" or #db.groups == 0 then
         local g = { id = 1 }
@@ -1046,7 +1144,6 @@ local function InitDB()
         if type(g.color) ~= "table" then g.color = GroupColour(g.id) end
     end
     if type(db.nextGroup) ~= "number" or db.nextGroup <= maxID then db.nextGroup = maxID + 1 end
-    FlashCD.db = db
 end
 
 -- Put every setting back to its default. Tracked spells (and their own
@@ -1079,15 +1176,212 @@ local function SaveTemplate()
 end
 
 ---------------------------------------------------------------------------
+-- Profiles: copy settings from another character, export and import them
+-- as text to share with others
+---------------------------------------------------------------------------
+function FlashCD.CharKey()
+    local name = UnitName and UnitName("player") or "?"
+    local realm = GetRealmName and GetRealmName() or "?"
+    return name .. " - " .. realm
+end
+
+-- This character's settings (and, with withSpells, its tracked spells)
+function FlashCD.ProfileData(withSpells)
+    local db = FlashCD.db
+    local data = { v = 1, settings = {} }
+    for _, k in ipairs(TEMPLATE_KEYS) do data.settings[k] = CopyTable(db[k]) end
+    if withSpells then
+        data.spells = CopyTable(db.spells)
+        data.removed = CopyTable(db.removed)
+    end
+    return data
+end
+
+-- Saved per character (account-wide), so other characters can copy them
+local function SaveCharacter()
+    local data = FlashCD.ProfileData(true)
+    local class = UnitClass and (UnitClass("player"))
+    data.class = class
+    FlashCDDB.chars[FlashCD.CharKey()] = data
+end
+
+-- Other characters with saved settings: { {key, label}, ... }
+function FlashCD.Characters()
+    local list, me = {}, FlashCD.CharKey()
+    for key, data in pairs(FlashCDDB.chars or {}) do
+        if key ~= me then
+            list[#list + 1] = { key = key, label = key .. (data.class and (" (" .. data.class .. ")") or "") }
+        end
+    end
+    table.sort(list, function(a, b) return a.key < b.key end)
+    return list
+end
+
+-- Use settings from profile data (from a character or an import)
+function FlashCD.ApplyProfile(data, withSpells)
+    local db = FlashCD.db
+    if type(data) ~= "table" or type(data.settings) ~= "table" then return false end
+    for _, k in ipairs(TEMPLATE_KEYS) do
+        if data.settings[k] ~= nil then db[k] = CopyTable(data.settings[k]) end
+    end
+    for k, v in pairs(DEFAULTS) do
+        if db[k] == nil or type(db[k]) ~= type(v) then db[k] = CopyTable(v) end
+    end
+    FlashCD.NormalizeGroups(db)
+    if withSpells and type(data.spells) == "table" then
+        db.spells = {}
+        for key, e in pairs(data.spells) do
+            if type(key) == "string" then db.spells[key] = type(e) == "table" and CopyTable(e) or {} end
+        end
+        db.removed = type(data.removed) == "table" and CopyTable(data.removed) or {}
+    end
+    if FlashCD.unlocked then FlashCD.SetUnlocked(false) end
+    FlashCD.ApplyLayout()
+    FlashCD.ResetState()
+    if FlashCD.UpdateMinimapButton then FlashCD.UpdateMinimapButton() end
+    if FlashCD.OnProfileApplied then FlashCD.OnProfileApplied() end
+    return true
+end
+
+function FlashCD.CopyFromCharacter(key, withSpells)
+    local data = FlashCDDB.chars and FlashCDDB.chars[key]
+    return FlashCD.ApplyProfile(data, withSpells)
+end
+
+-- Text form: "FlashCD:1:" followed by a Lua-like table of strings, numbers,
+-- booleans and tables. Read back by a small parser of its own: pasted text is
+-- never run as code.
+local function Serialize(v, out)
+    local t = type(v)
+    if t == "table" then
+        out[#out + 1] = "{"
+        local first = true
+        for k, x in pairs(v) do
+            local kt, xt = type(k), type(x)
+            if (kt == "string" or kt == "number") and (xt == "table" or xt == "string" or xt == "number" or xt == "boolean") then
+                if not first then out[#out + 1] = "," end
+                first = false
+                out[#out + 1] = "["
+                Serialize(k, out)
+                out[#out + 1] = "]="
+                Serialize(x, out)
+            end
+        end
+        out[#out + 1] = "}"
+    elseif t == "string" then
+        out[#out + 1] = '"' .. v:gsub('[\\"]', "\\%0"):gsub("\n", "\\n") .. '"'
+    elseif t == "number" then
+        out[#out + 1] = (v == math.floor(v)) and string.format("%d", v) or string.format("%.4f", v):gsub("0+$", "")
+    else
+        out[#out + 1] = v and "true" or "false"
+    end
+end
+
+local EXPORT_PREFIX = "FlashCD:1:"
+
+function FlashCD.ExportString(withSpells)
+    local out = {}
+    Serialize(FlashCD.ProfileData(withSpells), out)
+    return EXPORT_PREFIX .. table.concat(out)
+end
+
+-- Returns the profile data, or nil and a reason
+function FlashCD.ParseExport(text)
+    if type(text) ~= "string" then return nil, "nothing to import" end
+    text = text:match("^%s*(.-)%s*$")
+    if text:sub(1, #EXPORT_PREFIX) ~= EXPORT_PREFIX then
+        return nil, "this isn't a FlashCD export (it should start with " .. EXPORT_PREFIX .. ")"
+    end
+    if #text > 200000 then return nil, "the text is too long" end
+    local src, pos, depth = text, #EXPORT_PREFIX + 1, 0
+    local function fail(msg) error({ msg = msg }, 0) end
+    local function skip() pos = src:find("[^%s]", pos) or (#src + 1) end
+    local value
+    local function str()
+        local out, i = {}, pos + 1
+        while true do
+            local c = src:sub(i, i)
+            if c == "" then fail("unfinished text") end
+            if c == '"' then pos = i + 1 return table.concat(out) end
+            if c == "\\" then
+                local n = src:sub(i + 1, i + 1)
+                out[#out + 1] = (n == "n") and "\n" or n
+                i = i + 2
+            else
+                out[#out + 1] = c
+                i = i + 1
+            end
+        end
+    end
+    function value()
+        skip()
+        local c = src:sub(pos, pos)
+        if c == "{" then
+            depth = depth + 1
+            if depth > 20 then fail("too deeply nested") end
+            pos = pos + 1
+            local t = {}
+            skip()
+            if src:sub(pos, pos) == "}" then pos = pos + 1 depth = depth - 1 return t end
+            while true do
+                skip()
+                if src:sub(pos, pos) ~= "[" then fail("expected [ at " .. pos) end
+                pos = pos + 1
+                local k = value()
+                skip()
+                if src:sub(pos, pos + 1) ~= "]=" then fail("expected ]= at " .. pos) end
+                pos = pos + 2
+                if type(k) ~= "string" and type(k) ~= "number" then fail("bad key at " .. pos) end
+                t[k] = value()
+                skip()
+                local sep = src:sub(pos, pos)
+                pos = pos + 1
+                if sep == "}" then depth = depth - 1 return t end
+                if sep ~= "," then fail("expected , or } at " .. (pos - 1)) end
+            end
+        elseif c == '"' then
+            return str()
+        elseif src:sub(pos, pos + 3) == "true" then
+            pos = pos + 4 return true
+        elseif src:sub(pos, pos + 4) == "false" then
+            pos = pos + 5 return false
+        else
+            local num = src:match("^%-?%d+%.?%d*", pos)
+            if not num then fail("unexpected '" .. c .. "' at " .. pos) end
+            pos = pos + #num
+            return tonumber(num)
+        end
+    end
+    local ok, result = pcall(function()
+        local v = value()
+        skip()
+        if pos <= #src then fail("extra text at the end") end
+        return v
+    end)
+    if not ok then return nil, "the text is damaged: " .. (type(result) == "table" and result.msg or tostring(result)) end
+    if type(result) ~= "table" or type(result.settings) ~= "table" then return nil, "no settings in the text" end
+    return result
+end
+
+---------------------------------------------------------------------------
 -- Events
 ---------------------------------------------------------------------------
+-- The game's cooldown events trigger a full scan. Between them: spells on
+-- cooldown are checked every 0.1 s (to catch the moment they are ready,
+-- which has no event of its own), and a full scan runs every second in case
+-- an event was missed.
 local driver = CreateFrame("Frame")
-local acc = 0
+local acc, fullAcc = 0, 0
 driver:SetScript("OnUpdate", function(_, elapsed)
-    acc = acc + elapsed
+    acc, fullAcc = acc + elapsed, fullAcc + elapsed
     if acc < 0.1 then return end
     acc = 0
-    Scan(false)
+    if fullAcc >= 1 then
+        fullAcc = 0
+        Scan(false)
+    else
+        Scan(false, true)
+    end
 end)
 driver:Hide()
 
@@ -1114,9 +1408,11 @@ events:SetScript("OnEvent", function(self, event, arg1)
         FlashCD.MigrateSpells()
         FlashCD.AutoTrack()
         FlashCD.ResetState()
+        SaveCharacter()
         driver:Show()
     elseif event == "PLAYER_LOGOUT" then
         SaveTemplate()
+        SaveCharacter()
     else
         if event == "SPELLS_CHANGED" or event == "UPDATE_SHAPESHIFT_FORM" then FlashCD.AutoTrack() end
         Scan(false)
