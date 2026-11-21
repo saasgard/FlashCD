@@ -21,7 +21,7 @@ def main():
     version = re.search(r"^## Version:\s*(\S+)", toc, re.M)
     version = version.group(1) if version else "dev"
 
-    files = ["FlashCD.toc", "README.md", "Media/Icon.tga", "Media/icon.png"]
+    files = ["FlashCD.toc", "README.md", "LICENSE", "Media/Icon.tga", "Media/icon.png"]
     files += [line.strip() for line in toc.splitlines()
               if line.strip() and not line.startswith("#") and line.strip().endswith(".lua")]
     missing = [f for f in files if not os.path.isfile(os.path.join(ROOT, f))]

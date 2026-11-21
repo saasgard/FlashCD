@@ -94,3 +94,7 @@ Imported text is only read as settings, never run as code, so a bad paste can't 
 | `tests/` | Tests that run outside the game against a small fake of the WoW API: `python tests/run_tests.py` (needs the `lupa` package) |
 | `tools/release.py` | Builds `dist/FlashCD-<version>.zip` with only the files the game needs |
 | `tools/make_icon.py` | Draws the addon icon (needs Pillow) |
+
+## License
+
+MIT. See [LICENSE](LICENSE).
