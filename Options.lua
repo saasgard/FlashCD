@@ -1317,10 +1317,10 @@ local function LockButton(parent, getGroup)
         end
     end)
     if getGroup then
-        Tip(b, "Move", "Shows only this group's box, as big as its full row of icons. "
+        Tip(b, "Move", "Shows only this group's box: one icon where its flashes start. "
             .. "Drag it, or hover it and use the arrow keys (1 pixel, Shift: 10). Click again when done.")
     else
-        Tip(b, "Unlock all", "Shows a box for every group, as big as its full row of icons. "
+        Tip(b, "Unlock all", "Shows a box for every group: one icon where its flashes start. "
             .. "Drag a box to move its group, or hover it and use the arrow keys (1 pixel, Shift: 10). Click again to lock.")
     end
     return Track(b)

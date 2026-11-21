@@ -481,11 +481,11 @@ local function GetDisplay(g)
     return d
 end
 
--- Size the mover to the group's whole row (max icons, grow direction) and
--- fill it with placeholder icons
+-- Size the mover to one icon of the group, at the group's position, and
+-- show a placeholder icon in it
 local function LayoutMover(d)
     local g, m = d.g, d.mover
-    local n = math.max(1, g.maxIcons)
+    local n = 1
     local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
     for i = 1, n do
         local x, y = IconOffset(g, i, n)
