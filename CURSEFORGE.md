@@ -1,10 +1,6 @@
-![FlashCD](https://raw.githubusercontent.com/saasgard/FlashCD/main/Media/icon.png)
-
 # FlashCD
 
 FlashCD shows a spell's icon in the middle of your screen the moment its cooldown is ready. No more glancing down at your action bars to see if Barkskin or your trinket is back. The icon pops up, fades out after a second, and you get on with the fight.
-
-Made for **WoW Forever (patch 1.60.1)**.
 
 ## It works right away
 

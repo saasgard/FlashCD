@@ -1,0 +1,14 @@
+package-as: FlashCD
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
+ignore:
+  - tests
+  - tools
+  - dist
+  - CURSEFORGE.md
+  - .github
+  - .gitattributes
+  - .gitignore
