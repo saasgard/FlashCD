@@ -73,3 +73,16 @@ check(#items > 0, "the preset list opens")
 items[1]._s_OnEnter(items[1])
 check(#calls > 0 and calls[1].group == "preview1", "hovering a preset previews it")
 check(#db.groups .. db.groups[1].name .. db.groups[1].size .. db.sound == before, "... without using it")
+
+-- a preview shows one spell per group
+calls = {}
+FlashCD.Flash = function(key, g, soon, opts)
+    calls[#calls + 1] = { key = key, group = g and g.id }
+    return origFlash(key, g, soon, opts)
+end
+FlashCD.PreviewPreset("bold")
+check(#calls == 1 and calls[1].key == "Barkskin", "a one-group preview flashes just one spell (the longest cooldown)")
+calls = {}
+FlashCD.PreviewPreset("bigsmall")
+check(#calls == 2 and calls[1].group ~= calls[2].group, "Big and small previews one spell in each group")
+FlashCD.Flash = origFlash

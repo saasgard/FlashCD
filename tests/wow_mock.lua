@@ -111,8 +111,11 @@ function InCombatLockdown() return IN_COMBAT end
 CTRL, SHIFT = false, false
 function IsControlKeyDown() return CTRL end
 function IsShiftKeyDown() return SHIFT end
-FORM = 0
+FORM = 0                   -- the form you're in (index in FORMS, 0 = none)
+FORMS = {}                 -- your forms: { spellID, ... }
 function GetShapeshiftForm() return FORM end
+function GetNumShapeshiftForms() return #FORMS end
+function GetShapeshiftFormInfo(i) return 100 + i, i == FORM, true, FORMS[i] end
 
 -- time
 NOW = 100

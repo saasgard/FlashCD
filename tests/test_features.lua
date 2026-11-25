@@ -66,10 +66,17 @@ check(allRejected, "foreign, damaged or code-like text is rejected (with a reaso
 -- import replaces settings; spells only when asked
 db.groups[1].size = 50
 db.spells.Barkskin.sound = nil
-local w1 = NAMED.FlashCDWindow
+-- the name the sidebar shows for the first group
+local function SidebarFirst()
+    for _, b in ipairs(FindFrames(function(f) return rawget(f, "drop") and rawget(f, "id") == db.groups[1].id end)) do
+        if b:IsShown() then return b.text:GetText() end
+    end
+end
+local w1 = _G.FlashCDWindow
 FlashCD.ApplyProfile(data, false)
 check(db.groups[1].size == 123 and db.spells.Barkskin.sound == nil, "import without spells keeps this character's spells")
-check(NAMED.FlashCDWindow ~= w1, "the window is rebuilt to show the new settings")
+check(_G.FlashCDWindow == w1 and SidebarFirst() == db.groups[1].name,
+    "the window shows the new settings (refreshed, not built again)")
 FlashCD.ApplyProfile(data, true)
 check(db.spells.Barkskin.sound == "bell", "import with spells brings the spells too")
 
@@ -92,13 +99,12 @@ FlashCD.TrackKey("Growl")
 db.spells.Growl.group = db.groups[2].id
 db.spells.Growl.sound = "bell"
 FlashCD.UntrackKey("Maul")
-local w2 = NAMED.FlashCDWindow
 FlashCD.ResetToFresh(false)
 check(#db.groups == 1 and db.groups[1].name == "Main" and db.groups[1].size == 96, "fresh profile: one default group")
 check(db.sound == "none" and db.theme == "modern", "... and default settings")
 check(db.spells.Growl and db.spells.Growl.sound == "bell" and db.spells.Growl.group == nil,
     "... keeps tracked spells (in the default group) unless asked")
-check(NAMED.FlashCDWindow ~= w2, "... and the window shows it")
+check(SidebarFirst() == "Main", "... and the window shows it")
 db.learnedCD.Growl = 7
 FlashCD.ResetToFresh(true)
 check(db.spells.Barkskin ~= nil and db.spells.Growl ~= nil and db.spells.Growl.sound == nil,

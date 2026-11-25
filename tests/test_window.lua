@@ -86,16 +86,40 @@ check(not FlashCD.IsUnlocked() and w:IsShown(), "Done locks and brings the windo
 -- themes switch at once
 local other = (db.theme == "wow") and "modern" or "wow"
 FlashCD.SetTheme(other)
-local w2 = NAMED.FlashCDWindow
-check(w2 ~= w and w2:IsShown() and not w:IsShown(), "changing the theme rebuilds the open window")
+local w2 = _G.FlashCDWindow
+check(w2 ~= w and w2:IsShown() and not w:IsShown(), "changing the theme shows the open window in the new look")
 w2:Hide()
 FlashCD.SetTheme(db.theme == "wow" and "modern" or "wow")
-check(not NAMED.FlashCDWindow:IsShown(), "a closed window stays closed after a theme change")
+check(_G.FlashCDWindow == w and not w:IsShown(), "switching back reuses the first window (nothing new is built)")
+local count = #ALL
+FlashCD.SetTheme(other)
+FlashCD.SetTheme(db.theme == "wow" and "modern" or "wow")
+check(#ALL == count, "switching back and forth again makes no new frames")
 SlashCmdList.FLASHCD("")
-check(NAMED.FlashCDWindow:IsShown(), "the rebuilt window opens normally")
+check(_G.FlashCDWindow:IsShown(), "the window opens normally after theme changes")
 
 db.window = { w = 1000, h = 700, x = 50, y = 900 }
 FlashCD.ResetSettings()
 check(db.window.w == 1000, "reset keeps the window's size and place")
 
 CheckOwnGlobals()
+
+-- every Test button in the window draws its flash above the window
+local tops, calls = 0, 0
+local origFlash = FlashCD.Flash
+FlashCD.Flash = function(key, g, soon, opts)
+    calls = calls + 1
+    if opts and opts.top then tops = tops + 1 end
+    return origFlash(key, g, soon, opts)
+end
+for _, b in ipairs(FindFrames(function(f)
+    local t = rawget(f, "_text")
+    return (t == "Test" or t == "Test flash") and rawget(f, "_s_OnClick")
+end)) do b._s_OnClick(b) end
+local rows = Rows()
+rows.Barkskin._s_OnMouseUp(rows.Barkskin, "LeftButton")   -- something selected for the spell panel's Test
+for _, b in ipairs(FindFrames(function(f) return rawget(f, "_text") == "Test flash" and rawget(f, "_s_OnClick") end)) do
+    b._s_OnClick(b)
+end
+FlashCD.Flash = origFlash
+check(calls > 0 and tops == calls, string.format("every Test button flashes above the window (%d of %d)", tops, calls))

@@ -378,6 +378,8 @@ local function OpenMenu(owner, list, get, onPick, onHover)
         catcher:Hide()
 
         menu = CreateFrame("Frame", nil, UIParent)
+        menu.theme = WoW() and "wow" or "modern"
+        menu.catcher = catcher
         menu:SetFrameStrata("FULLSCREEN_DIALOG")
         menu:SetFrameLevel((catcher:GetFrameLevel() or 0) + 10)
         menu:EnableMouse(true)
@@ -388,7 +390,7 @@ local function OpenMenu(owner, list, get, onPick, onHover)
             AddBorder(menu, { 1, 1, 1, 0.2 })
         end
         menu.items = {}
-        menu:SetScript("OnHide", function() catcher:Hide() menu.owner = nil end)
+        menu:SetScript("OnHide", function(self) self.catcher:Hide() self.owner = nil end)
         menu:Hide()
     end
     if menu:IsShown() and menu.owner == owner then CloseMenu() return end
@@ -664,10 +666,16 @@ local function Place(w, parent, col, y, x)
     return w
 end
 
--- Forget the shared dropdown menu (it is made again in the current theme)
+-- After a theme change: use that theme's dropdown menu (each theme's menu is
+-- made once and kept)
+local menus = {}
 function W.ResetMenu()
-    if menu then menu:Hide() end
-    menu, catcher = nil, nil
+    if menu then
+        menu:Hide()
+        menus[menu.theme] = menu
+    end
+    menu = menus[WoW() and "wow" or "modern"]
+    catcher = menu and menu.catcher
 end
 
 W.Track = Track

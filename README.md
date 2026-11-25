@@ -23,11 +23,11 @@ After that, `/fcd` or the minimap button opens the settings.
 
 The spell list shows everything in your spellbook (or the usable items in your bags and gear). Tick a spell to track it, untick it to stop. A spell you untick stays that way, even when you learn a new rank.
 
-Click a spell to change its own settings on the right: which group it flashes in, its own sound, its own glow colour, mute it, or make it flash only while you're in a form (bear, cat and so on). Ctrl-click or Shift-click to change several spells at once.
+Click a spell to change its own settings on the right: which group it flashes in, its own sound, its own glow colour, mute it, or choose when it may flash: any time, in any form, or only in one form (say, only in Cat Form). Ctrl-click or Shift-click to change several spells at once.
 
 ## Groups
 
-You can have up to ten groups, each with its own place on screen and its own look. A common setup is big icons in the middle for your important cooldowns and a row of small ones underneath for the rest. Drag a spell from the list onto a group in the sidebar to move it there.
+You can have up to ten groups, each with its own place on screen and its own look. A common setup is big icons in the middle for your important cooldowns and a row of small ones underneath for the rest. Drag a spell from the list onto a group in the sidebar to move it there, and use Up and Down on a group's page to change their order.
 
 For each group you can set the icon size, opacity, how long it stays, the animation (pop, zoom, bounce, slide in or a plain fade), a glow border, a shine effect, the spell name, a "Ready!" label, and which way the icons line up when several come ready together.
 
@@ -51,10 +51,12 @@ If something didn't flash and you don't know why, the **Recent flashes** page te
 
 On **Profiles & sharing** you can:
 
-- copy settings from another of your characters
+- load a profile: each of your characters has one under its own name, and you can save copies of your settings to keep several setups
 - export your settings as a line of text and send it to someone, choosing what to include (just the positions, say, or everything)
 - import a text someone sent you
 - pick one of the presets, or start over with the defaults
+
+Changed your mind after loading a profile, importing or picking a preset? **Undo** puts your settings back.
 
 Imported text is only read as settings, never run as code, so a bad paste can't do any harm.
 

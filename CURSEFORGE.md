@@ -14,8 +14,8 @@ Install it and log in. FlashCD finds every spell in your spellbook that has a co
 - **Make it yours.** Several animations, a glow border in any colour, a shine effect, the spell name, a "Ready!" label, and a sound if you want one. Every spell can have its own sound and glow colour.
 - **Presets.** Start from a ready-made look: Standard, Minimal, Big and bold, Big and small, or a column on the left or right of your character. Hover one to see it before you pick it.
 - **An early warning.** Optionally, a grey "Soon" flash a few seconds before a cooldown is ready.
-- **Only when it matters.** Flash only in combat, ignore short cooldowns, skip spells your current form can't cast, or set a spell to flash only in bear or cat form.
-- **Share your setup.** Export your settings as a line of text and send it to a friend, or copy settings between your own characters. You choose what to share, even just the positions.
+- **Only when it matters.** Flash only in combat, ignore short cooldowns, skip spells your current form can't cast, or set a spell to flash only in a form, or only in one form like Cat Form.
+- **Profiles and sharing.** Each of your characters has a profile under its own name, and you can save copies to keep several setups. Export your settings as a line of text and send it to a friend; you choose what to share, even just the positions. Undo puts things back if you change your mind.
 - **See why.** If a spell didn't flash, the Recent flashes page tells you why.
 
 ## Commands

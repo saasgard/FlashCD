@@ -679,7 +679,7 @@ local function BuildGroupPage(page)
         local g, n = G(), 0
         for key in pairs(DB().spells) do
             if FlashCD.GroupOf(key) == g then
-                FlashCD.Flash(key, g)
+                FlashCD.Flash(key, g, false, { top = true })   -- above this window
                 n = n + 1
                 if n >= math.min(3, g.maxIcons) then break end
             end
@@ -705,9 +705,23 @@ local function BuildGroupPage(page)
         RefreshAll()
     end)
     Tip(del, "Delete", "Deletes this group. Its spells move to the first group. The last group can't be deleted.")
+
+    -- order in the sidebar
+    local up = MakeFlatButton(page, "Up", 44, 22)
+    up:SetPoint("LEFT", del, "RIGHT", 6, 0)
+    up:SetScript("OnClick", function() FlashCD.MoveGroup(G().id, -1) RefreshAll() end)
+    Tip(up, "Up", "Moves this group up in the list.")
+    local down = MakeFlatButton(page, "Down", 50, 22)
+    down:SetPoint("LEFT", up, "RIGHT", 4, 0)
+    down:SetScript("OnClick", function() FlashCD.MoveGroup(G().id, 1) RefreshAll() end)
+    Tip(down, "Down", "Moves this group down in the list.")
+
     Track({ Refresh = function()
-        del:SetEnabled(#FlashCD.Groups() > 1)
-        copy:SetEnabled(#FlashCD.Groups() < FlashCD.MAX_GROUPS)
+        local groups = FlashCD.Groups()
+        del:SetEnabled(#groups > 1)
+        copy:SetEnabled(#groups < FlashCD.MAX_GROUPS)
+        up:SetEnabled(groups[1].id ~= G().id)
+        down:SetEnabled(groups[#groups].id ~= G().id)
     end })
 
     local db = G
@@ -941,7 +955,7 @@ local function BuildDetail(page)
     test:SetScript("OnClick", function()
         for i, k in ipairs(keys) do
             if i > 8 then break end
-            FlashCD.Flash(k)
+            FlashCD.Flash(k, nil, false, { top = true })   -- above this window
         end
     end)
 
@@ -973,11 +987,35 @@ local function BuildDetail(page)
         function(v) ForTracked(function(e) e.muted = v or nil end) AfterChange() end)
     mute:SetPoint("TOPLEFT", 10, -108)
 
-    local formOnly = MakeCheck(settings, "Only while in a form",
-        function() return #tracked > 0 and Common("formOnly") == true end,
-        function(v) ForTracked(function(e) e.formOnly = v or nil end) AfterChange() end)
-    formOnly:SetPoint("TOPLEFT", 10, -134)
-    Tip(formOnly, "Only while in a form", "Flash only while you're shapeshifted (bear, cat and so on). "
+    -- when it may flash: any time, in any form, or only in one form.
+    -- Stored as formOnly: nil, true, or the form's spell ID (menu keys 0, -1, ID)
+    local formLabel = settings:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    formLabel:SetPoint("TOPLEFT", 16, -140)
+    formLabel:SetText("Flash in")
+    local formOnly = MakeDropdown(settings, nil, function()
+            local l = { { key = 0, label = "Any time" }, { key = -1, label = "Any form" } }
+            for _, f in ipairs(FlashCD.Forms()) do l[#l + 1] = { key = f.id, label = "Only " .. f.name } end
+            return l
+        end,
+        function()
+            if #tracked == 0 then return 0 end
+            local v = Common("formOnly")
+            if v == nil then
+                -- nil means "any time" when all agree, or that they differ
+                for _, k in ipairs(tracked) do if Entry(k).formOnly ~= nil then return nil end end
+                return 0
+            end
+            return v == true and -1 or v
+        end,
+        function(v)
+            local value
+            if v == -1 then value = true elseif v ~= 0 then value = v end
+            ForTracked(function(e) e.formOnly = value end)
+            AfterChange()
+        end, DETAIL_W - 96)
+    formOnly:SetPoint("LEFT", formLabel, "LEFT", 64, 0)
+    formOnly.placeholder = "Mixed"
+    formOnly:SetTip("Flash in", "When this spell may flash: any time, only while shapeshifted, or only in one form. "
         .. "For spells like Faerie Fire that only have a cooldown in a form.")
 
     local glowLabel = settings:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -1168,38 +1206,117 @@ end
 ---------------------------------------------------------------------------
 -- Profiles: copy from another character, export and import as text
 ---------------------------------------------------------------------------
-local function BuildProfilesPage(page)
-    local copy = MakeSection(page, "Copy from another character", "F", -12, 104)
-    local chosen
-    local chars = MakeDropdown(copy, "Character", function()
-            local l = FlashCD.Characters()
-            if #l == 0 then l = { { key = nil, label = "No other characters yet" } } end
+local function BuildProfilesPage(outer)
+    -- the page scrolls, so nothing is cut off in a small window or the
+    -- WoW Forever theme (its border is wider)
+    local scroll = MakeScroll(outer, 30)
+    local page = CreateFrame("Frame", nil, scroll)
+    page:SetSize(600, 610)
+    scroll:SetScrollChild(page)
+    scroll:SetScript("OnSizeChanged", function(_, w)
+        if type(w) == "number" and w > 0 then page:SetWidth(w) end
+    end)
+
+    -- the profiles: this character's (by name), your other characters', and
+    -- saved copies. Load one onto this character, or save a copy of this one.
+    local prof = MakeSection(page, "Profiles", "F", -12, 144)
+    local chosen = "char:" .. FlashCD.CharKey()
+    local function Chosen()
+        for _, e in ipairs(FlashCD.ProfileList()) do
+            if e.key == chosen then return e end
+        end
+        chosen = "char:" .. FlashCD.CharKey()   -- it was deleted: back to this character
+        return FlashCD.ProfileList()[1]
+    end
+    local loadBtn, delBtn
+    local profNote = prof:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    local function RefreshButtons()
+        local e = Chosen()
+        loadBtn:SetEnabled(e.kind ~= "me")
+        delBtn:SetEnabled(e.kind == "copy")
+    end
+    local profiles = MakeDropdown(prof, "Profile", function()
+            local l = {}
+            for _, e in ipairs(FlashCD.ProfileList()) do l[#l + 1] = { key = e.key, label = e.label } end
             return l
         end,
-        function() return chosen end,
-        function(v) chosen = v end)
-    Place(chars, copy, "L", -30)
-    chars:SetTip("Character", "Every character you log in with saves its FlashCD settings here, so the others can copy them.")
-    local copySpells = false
-    local copyCheck = MakeCheck(copy, "Also copy tracked spells",
-        function() return copySpells end, function(v) copySpells = v end)
-    copyCheck:SetPoint("TOPLEFT", copy, "TOP", 10, -44)
-    Tip(copyCheck, "Also copy tracked spells", "Which spells are tracked, in which group, with their own settings. Best for a character of the same class.")
-    local copyBtn = MakeButton(copy, "Copy", 90, 22, true)
-    copyBtn:SetPoint("TOPLEFT", 16, -76)
-    local copyNote = copy:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    copyNote:SetPoint("LEFT", copyBtn, "RIGHT", 10, 0)
-    copyBtn:SetScript("OnClick", function()
-        if not chosen then copyNote:SetText("Pick a character first.") return end
-        AskConfirm("Replace this character's FlashCD settings with " .. chosen .. "'s"
-            .. (copySpells and " (including tracked spells)" or "") .. "?", function()
-            if FlashCD.CopyFromCharacter(chosen, copySpells) then
-                print("|cff33ccffFlashCD|r: settings copied from " .. chosen .. ".")
+        function() return Chosen().key end,
+        function(v) chosen = v; profNote:SetText(""); RefreshButtons() end)
+    Place(profiles, prof, "L", -30)
+    profiles:SetTip("Profile", "This character's settings, your other characters' (each saves its own when you log in), "
+        .. "and copies you've saved.")
+    local loadSpells = false
+    local loadCheck = MakeCheck(prof, "Also load tracked spells",
+        function() return loadSpells end, function(v) loadSpells = v end)
+    loadCheck:SetPoint("TOPLEFT", prof, "TOP", 10, -44)
+    Tip(loadCheck, "Also load tracked spells", "Which spells are tracked, in which group, with their own settings. Best for a character of the same class.")
+
+    loadBtn = MakeButton(prof, "Load", 80, 22, true)
+    loadBtn:SetPoint("TOPLEFT", 16, -80)
+    loadBtn:SetScript("OnClick", function()
+        local e = Chosen()
+        AskConfirm("Replace this character's FlashCD settings with " .. e.name
+            .. (loadSpells and " (including tracked spells)" or "") .. "?", function()
+            if FlashCD.LoadProfile(e.key, loadSpells) then
+                print("|cff33ccffFlashCD|r: loaded " .. e.name .. ".")
             end
         end)
     end)
+    Tip(loadBtn, "Load", "Puts the chosen profile's settings on this character. Undo (below) puts yours back.")
+    delBtn = MakeFlatButton(prof, "Delete", 64, 22)
+    delBtn:SetPoint("LEFT", loadBtn, "RIGHT", 6, 0)
+    delBtn:SetScript("OnClick", function()
+        local e = Chosen()
+        AskConfirm("Delete the saved copy " .. e.name .. "?", function()
+            FlashCD.DeleteProfileCopy(e.name)
+            RefreshAll()
+        end)
+    end)
+    Tip(delBtn, "Delete", "Deletes a saved copy. Characters' own profiles can't be deleted here.")
+    profNote:SetPoint("LEFT", delBtn, "RIGHT", 10, 0)
+    profNote:SetPoint("RIGHT", -16, 0)
+    profNote:SetJustifyH("LEFT")
 
-    local ex = MakeSection(page, "Export (share with others)", "F", -128, 180)
+    local saveLabel = prof:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    saveLabel:SetPoint("TOPLEFT", 16, -118)
+    saveLabel:SetText("Save a copy as")
+    local nameBox = MakeEditBox(prof, 180, 22)
+    nameBox:SetMaxLetters(40)
+    nameBox:SetPoint("LEFT", saveLabel, "RIGHT", 10, 0)
+    local saveBtn = MakeButton(prof, "Save", 70, 22)
+    saveBtn:SetPoint("LEFT", nameBox, "RIGHT", 6, 0)
+    Tip(saveBtn, "Save a copy", "Saves this character's settings (and tracked spells) under this name, "
+        .. "so you can keep several setups and load them on any character.")
+    local function Save()
+        local name = (nameBox:GetText() or ""):match("^%s*(.-)%s*$")
+        local function Do()
+            local ok, err = FlashCD.SaveProfileCopy(name)
+            if ok then
+                chosen = "copy:" .. name
+                profNote:SetText("Saved as " .. name .. ".")
+                RefreshAll()
+            else
+                profNote:SetText(err)
+            end
+        end
+        if name ~= "" and FlashCDDB.profiles[name] then
+            AskConfirm("There's already a copy called " .. name .. ". Replace it?", Do)
+        else
+            Do()
+        end
+    end
+    saveBtn:SetScript("OnClick", Save)
+    nameBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() Save() end)
+
+    Track({ Refresh = function()
+        profiles:Refresh()
+        RefreshButtons()
+        if (nameBox:GetText() or "") == "" then
+            nameBox:SetText((UnitName and UnitName("player") or "My") .. " copy")
+        end
+    end })
+
+    local ex = MakeSection(page, "Export (share with others)", "F", -164, 180)
     -- what to include: one checkbox per part, in two columns
     local include = {}
     for i, part in ipairs(FlashCD.PROFILE_PARTS) do
@@ -1229,7 +1346,7 @@ local function BuildProfilesPage(page)
         exNote:SetText("Copied text ready: press Ctrl+C now.")
     end)
 
-    local im = MakeSection(page, "Import", "F", -316, 124)
+    local im = MakeSection(page, "Import", "F", -352, 124)
     local imBox = MakeEditBox(im, 300, 24)
     imBox:SetMaxLetters(0)
     if imBox.SetMaxBytes then imBox:SetMaxBytes(0) end
@@ -1271,7 +1388,7 @@ local function BuildProfilesPage(page)
         end)
     end)
 
-    local fresh = MakeSection(page, "Presets and start fresh", "F", -448, 110)
+    local fresh = MakeSection(page, "Presets and start fresh", "F", -484, 110)
     local chosenPreset = "default"
     local presetNote = fresh:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     presetNote:SetTextColor(0.7, 0.7, 0.7)
@@ -1300,7 +1417,14 @@ local function BuildProfilesPage(page)
     previewBtn:SetScript("OnClick", function() FlashCD.PreviewPreset(chosenPreset) end)
     Tip(previewBtn, "Preview", "Shows the preset's flashes with your spells, without changing anything. "
         .. "Hovering a preset in the list previews it too.")
-    presetNote:SetPoint("LEFT", previewBtn, "RIGHT", 10, 0)
+    local undoBtn = MakeFlatButton(fresh, "Undo", 64, 22)
+    undoBtn:SetPoint("LEFT", previewBtn, "RIGHT", 6, 0)
+    undoBtn:SetScript("OnClick", function()
+        if FlashCD.Undo() then print("|cff33ccffFlashCD|r: settings put back.") end
+    end)
+    Tip(undoBtn, "Undo", "Puts back your settings from before the last preset, import, copy or fresh start.")
+    Track({ Refresh = function() undoBtn:SetEnabled(FlashCD.CanUndo()) end })
+    presetNote:SetPoint("LEFT", undoBtn, "RIGHT", 10, 0)
     presetNote:SetPoint("RIGHT", -16, 0)
     presetNote:SetJustifyH("LEFT")
     presetNote:SetText(FlashCD.GetPreset(chosenPreset).desc)
@@ -1521,6 +1645,18 @@ local WIN_W, WIN_H = 960, 640
 
 local currentPage   -- the page showing, kept when the window is built again
 
+-- Size and place the window from the saved settings
+local function PlaceWindow(w)
+    local s = DB().window
+    w:SetSize(math.max(WIN_W - 20, s.w or WIN_W), math.max(WIN_H, s.h or WIN_H))
+    w:ClearAllPoints()
+    if s.x and s.y then
+        w:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", s.x, s.y)
+    else
+        w:SetPoint("CENTER")
+    end
+end
+
 local function SaveWindow(w)
     local s = DB().window
     local width, height, left, top = w:GetWidth(), w:GetHeight(), w:GetLeft(), w:GetTop()
@@ -1546,13 +1682,7 @@ local function BuildWindow(startPage)
     -- Esc closes it, like the game's own windows
     if type(UISpecialFrames) == "table" then table.insert(UISpecialFrames, "FlashCDWindow") end
 
-    local s = DB().window
-    w:SetSize(math.max(WIN_W - 20, s.w or WIN_W), math.max(WIN_H, s.h or WIN_H))
-    if s.x and s.y then
-        w:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", s.x, s.y)
-    else
-        w:SetPoint("CENTER")
-    end
+    PlaceWindow(w)
 
     -- title bar: drag to move
     local bar = CreateFrame("Frame", nil, w)
@@ -1684,32 +1814,76 @@ end
 
 -- Build the window again, e.g. in a new theme: same page, size and place.
 -- The old frames are hidden and left alone (frames can't be deleted).
+-- Each theme's window is built once and kept: switching theme swaps which
+-- window (and its parts) is in use. Frames can't be deleted, so building a
+-- new window for every switch would leave hidden ones behind.
+local windows = {}     -- [theme] = that window's parts
+local builtTheme       -- the theme of the window in use
+
+local function ThemeKey() return DB().theme == "wow" and "wow" or "modern" end
+
+local function SaveParts()
+    local p = {
+        panel = panel, confirmFrame = confirmFrame, preview = preview, spellList = spellList,
+        searchBox = searchBox, RefreshSidebar = RefreshSidebar, OnSelectionChanged = OnSelectionChanged,
+        ShowPage = ShowPage, OnLog = FlashCD.OnLog, movingBar = movingBar,
+        refreshers = {}, groupButtons = {},
+    }
+    for i, w in ipairs(refreshers) do p.refreshers[i] = w end
+    for i, b in ipairs(groupButtons) do p.groupButtons[i] = b end
+    return p
+end
+
+local function LoadParts(p)
+    panel, confirmFrame, preview, spellList = p.panel, p.confirmFrame, p.preview, p.spellList
+    searchBox, RefreshSidebar, OnSelectionChanged = p.searchBox, p.RefreshSidebar, p.OnSelectionChanged
+    ShowPage, FlashCD.OnLog, movingBar = p.ShowPage, p.OnLog, p.movingBar
+    wipe(refreshers)
+    for i, w in ipairs(p.refreshers) do refreshers[i] = w end
+    wipe(groupButtons)
+    for i, b in ipairs(p.groupButtons) do groupButtons[i] = b end
+end
+
 RebuildWindow = function()
     local old = panel
     if not old then return end
     local wasShown = old:IsShown()
     SaveWindow(old)
-    old:SetScript("OnShow", nil)
     old:Hide()
     CloseMenu()
-    W.ResetMenu()
     if movingBar then movingBar:Hide() end
-    movingBar = nil
-    wipe(refreshers)
-    wipe(groupButtons)
-    confirmFrame = nil
-    preview, spellList, searchBox = nil, nil, nil
-    RefreshSidebar, OnSelectionChanged = nil, nil
-    panel = nil
-    BuildWindow(currentPage)
+    windows[builtTheme] = SaveParts()
+
+    W.ResetMenu()
+    local key = ThemeKey()
+    if windows[key] then
+        LoadParts(windows[key])
+        PlaceWindow(panel)
+        if ShowPage and currentPage then ShowPage(currentPage) end
+    else
+        wipe(refreshers)
+        wipe(groupButtons)
+        confirmFrame, movingBar = nil, nil
+        preview, spellList, searchBox = nil, nil, nil
+        RefreshSidebar, OnSelectionChanged = nil, nil
+        panel = nil
+        BuildWindow(currentPage)
+    end
+    builtTheme = key
+    _G.FlashCDWindow = panel   -- for Esc (the game's list of windows holds the name)
     if wasShown then panel:Show() end
     UpdateMovingBar()
 end
 
--- After settings were copied or imported: show them (and their theme)
+-- After settings were copied, imported or undone: show them. Only a new
+-- theme needs the other window; otherwise the window just refreshes.
 FlashCD.OnProfileApplied = function()
     editGroup = nil
-    RebuildWindow()
+    if panel and ThemeKey() ~= builtTheme then
+        RebuildWindow()
+    else
+        RefreshAll()
+    end
 end
 
 -- Change the window's theme ("modern" or "wow") right away
@@ -1721,6 +1895,7 @@ end
 function FlashCD.InitOptions()
     if panel then return end
     BuildWindow()
+    builtTheme = ThemeKey()
     BuildLauncher()
 end
 
@@ -1751,8 +1926,16 @@ local function OpenOn(page)
     if panel and panel:IsShown() and ShowPage then ShowPage(page) end
 end
 
+local welcomes = {}   -- [theme] = that theme's welcome window
+
 local function BuildWelcome()
     if welcome then welcome:Hide() end
+    local themeKey = DB().theme == "wow" and "wow" or "modern"
+    if welcomes[themeKey] then
+        welcome = welcomes[themeKey]
+        _G.FlashCDWelcome = welcome
+        return
+    end
     local w = MakeBackdropFrame(UIParent, "FlashCDWelcome")
     w:SetSize(470, 312)
     w:SetPoint("CENTER", 0, 80)
@@ -1823,6 +2006,7 @@ local function BuildWelcome()
             welcomePreset = v
             FlashCD.ApplyPreset(v, false)
             presetDesc:SetText(FlashCD.GetPreset(v).desc)
+            w.undo:Show()
             FlashCD.Test()
         end)
     preset:SetPoint("TOPLEFT", choose, "BOTTOMLEFT", 0, -16)
@@ -1830,7 +2014,19 @@ local function BuildWelcome()
     preset:SetTip("Preset", "A ready-made look to start from. Hover a preset in the list to preview it, "
         .. "click to use it; you can change everything afterwards.")
     presetDesc:SetPoint("TOPLEFT", preset, "BOTTOMLEFT", 0, -6)
-    presetDesc:SetPoint("RIGHT", -pad, 0)
+    presetDesc:SetPoint("RIGHT", place, "RIGHT", 0, 0)
+    -- undo a preset picked here (shown once one is)
+    w.undo = MakeFlatButton(w, "Undo", 70, 20)
+    w.undo:SetPoint("TOPRIGHT", test, "BOTTOMRIGHT", 0, -62)
+    w.undo:SetScript("OnClick", function()
+        FlashCD.Undo()
+        welcomePreset = nil
+        presetDesc:SetText("Pick a ready-made look, or keep the standard one.")
+        w.preset:Refresh()
+        w.undo:Hide()
+    end)
+    Tip(w.undo, "Undo", "Puts back the look you had before picking a preset.")
+    w.undo:Hide()
     presetDesc:SetText(welcomePreset and FlashCD.GetPreset(welcomePreset).desc or "Pick a ready-made look, or keep the standard one.")
     preset.placeholder = "Choose a look"
     preset.onHover = function(k) FlashCD.PreviewPreset(k) end
@@ -1869,6 +2065,7 @@ local function BuildWelcome()
         if not listed then table.insert(UISpecialFrames, "FlashCDWelcome") end
     end
     welcome = w
+    welcomes[themeKey] = w
 end
 
 function FlashCD.ShowWelcome()

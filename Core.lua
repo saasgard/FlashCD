@@ -370,6 +370,23 @@ function FlashCD.DeleteGroup(id)
 end
 
 -- How many tracked spells flash in group g
+-- Move a group one place up (-1) or down (+1) in the list
+function FlashCD.MoveGroup(id, dir)
+    local groups = FlashCD.db.groups
+    local i
+    for n, g in ipairs(groups) do if g.id == id then i = n end end
+    local j = i and i + dir
+    if not j or j < 1 or j > #groups then return false end
+    -- spells without a group follow the first group: keep them where they are
+    local first = groups[1].id
+    for _, e in pairs(FlashCD.db.spells) do
+        if type(e) == "table" and e.group == nil then e.group = first end
+    end
+    groups[i], groups[j] = groups[j], groups[i]
+    FlashCD.ApplyLayout()
+    return true
+end
+
 function FlashCD.CountInGroup(g)
     local n = 0
     for key in pairs(FlashCD.db.spells) do
@@ -788,16 +805,14 @@ function FlashCD.Flash(key, g, soon, opts)
     if not soon and not (opts and opts.quiet) then FlashCD.PlaySound(entry.sound or db.sound) end
 end
 
--- Show a group's flashes (a preview, not saved): place its spot and flash
--- `keys` in it, above windows and without sound
+-- Show a group's flash (a preview, not saved): place its spot and flash the
+-- first of `keys` in it, one spell only, above windows and without sound
 local function PreviewGroup(g, keys)
     local d = GetDisplay(g)
+    while d.active[1] do Release(d.active[1], true) end   -- clear the last preview
     d.anchor:ClearAllPoints()
     d.anchor:SetPoint("CENTER", UIParent, g.point or "CENTER", g.x or 0, g.y or 0)
-    for i, key in ipairs(keys) do
-        if i > math.min(3, g.maxIcons or 3) then break end
-        FlashCD.Flash(key, g, false, { top = true, quiet = true })
-    end
+    if keys[1] then FlashCD.Flash(keys[1], g, false, { top = true, quiet = true }) end
 end
 FlashCD.PreviewGroup = PreviewGroup
 
@@ -888,6 +903,31 @@ end
 local state = {}     -- [key] = last known on-cooldown state
 local lastDur = {}   -- [key] = last readable cooldown length
 
+-- The form you're in: its spell ID (true if the game doesn't say which), or
+-- nil when you're not in a form
+local function CurrentForm()
+    local i = GetShapeshiftForm and GetShapeshiftForm() or 0
+    if not i or i == 0 then return nil end
+    if GetShapeshiftFormInfo then
+        local _, _, _, spellID = GetShapeshiftFormInfo(i)
+        if type(spellID) == "number" and not IsSecret(spellID) then return spellID end
+    end
+    return true
+end
+
+-- Your forms (bear, cat...): { {id = spellID, name = name}, ... }
+function FlashCD.Forms()
+    local list = {}
+    local n = GetNumShapeshiftForms and GetNumShapeshiftForms() or 0
+    for i = 1, n do
+        local _, _, _, spellID = GetShapeshiftFormInfo(i)
+        if type(spellID) == "number" then
+            list[#list + 1] = { id = spellID, name = FlashCD.GetSpellName(spellID) or ("Form " .. i) }
+        end
+    end
+    return list
+end
+
 -- Whether a spell that just came ready should flash; when not, also why
 local function ShouldFlash(key)
     local db = FlashCD.db
@@ -895,8 +935,14 @@ local function ShouldFlash(key)
     if type(entry) == "table" and entry.muted then return false, "muted" end
     if FlashCD.unlocked then return false, "groups are unlocked" end
     if db.combatOnly and not UnitAffectingCombat("player") then return false, "not in combat" end
-    if type(entry) == "table" and entry.formOnly and GetShapeshiftForm and (GetShapeshiftForm() or 0) == 0 then
-        return false, "not in a form"
+    -- formOnly: true = in any form, a number = only in that form (its spell ID)
+    local want = type(entry) == "table" and entry.formOnly
+    if want then
+        local cur = CurrentForm()
+        if not cur then return false, "not in a form" end
+        if type(want) == "number" and type(cur) == "number" and cur ~= want then
+            return false, "not in " .. (FlashCD.GetSpellName(want) or "that form")
+        end
     end
     if db.minCD > 0 then
         local len = lastDur[key] or CooldownLength(key)
@@ -1139,9 +1185,10 @@ local function InitDB()
     -- account table keeps only the template for new characters and the
     -- saved settings of each character (to copy between them)
     for k in pairs(account) do
-        if k ~= "template" and k ~= "chars" and k ~= "welcomed" then account[k] = nil end
+        if k ~= "template" and k ~= "chars" and k ~= "welcomed" and k ~= "profiles" then account[k] = nil end
     end
     if type(account.chars) ~= "table" then account.chars = {} end
+    if type(account.profiles) ~= "table" then account.profiles = {} end   -- saved copies
 
     local db = FlashCDCharDB
     for k, v in pairs(DEFAULTS) do
@@ -1264,6 +1311,12 @@ function FlashCD.ProfileData(parts)
         end
         data.settings.groups = groups
         data.settings.nextGroup = db.nextGroup
+        -- which spell is in which group goes with the groups, also when the
+        -- spells themselves aren't included
+        data.members = {}   -- [spell] = group id, 0 = the first group
+        for k, e in pairs(db.spells) do
+            if type(e) == "table" then data.members[k] = e.group or 0 end
+        end
     end
     if data.parts.spells then
         data.spells = CopyTable(db.spells)
@@ -1292,11 +1345,28 @@ function FlashCD.Characters()
     return list
 end
 
+-- Undo: the settings from before the last preset, import, copy or fresh
+-- start (one step; not saved over a reload)
+local undo
+local inChange = false
+
+-- Run a change that replaces settings, keeping what was there for Undo
+local function WithUndo(fn, ...)
+    if inChange then return fn(...) end   -- part of a bigger change
+    local db = FlashCD.db
+    undo = { data = FlashCD.ProfileData(), known = CopyTable(db.known), skippedNoCD = CopyTable(db.skippedNoCD) }
+    inChange = true
+    local ok, result = pcall(fn, ...)
+    inChange = false
+    if not ok then error(result, 0) end
+    return result
+end
+
 -- Use settings from profile data (from a character or an import). Only the
 -- parts it holds are changed. Groups: with every group part they replace
 -- yours; with only some (say positions), they go onto your groups in order,
 -- and missing groups are added.
-function FlashCD.ApplyProfile(data, withSpells)
+local function ApplyProfileNow(data, withSpells)
     local db = FlashCD.db
     if type(data) ~= "table" or type(data.settings) ~= "table" then return false end
     local parts = PartsOf(data)
@@ -1311,9 +1381,11 @@ function FlashCD.ApplyProfile(data, withSpells)
     end
 
     local idMap = {}   -- the text's group ids -> ours
+    local replaced = false
     local src = data.settings.groups
     if type(src) == "table" and #src > 0 and next(fields) then
         if parts.position and parts.look and parts.layout then
+            replaced = true
             db.groups = CopyTable(src)
             db.nextGroup = data.settings.nextGroup
             for _, g in ipairs(db.groups) do if type(g) == "table" and g.id then idMap[g.id] = g.id end end
@@ -1339,7 +1411,30 @@ function FlashCD.ApplyProfile(data, withSpells)
     end
     FlashCD.NormalizeGroups(db)
 
-    if withSpells and parts.spells and type(data.spells) == "table" then
+    -- the groups were replaced but your spells stay: put each spell in the
+    -- group it had in the profile (older profiles: from their spells)
+    local loadingSpells = withSpells and parts.spells and type(data.spells) == "table"
+    if replaced and not loadingSpells then
+        local members = type(data.members) == "table" and data.members or nil
+        if not members and type(data.spells) == "table" then
+            members = {}
+            for k, e in pairs(data.spells) do
+                if type(e) == "table" then members[k] = e.group or 0 end
+            end
+        end
+        for k, e in pairs(db.spells) do
+            if type(e) == "table" then
+                local g = members and members[k]
+                if g ~= nil then
+                    e.group = (g ~= 0) and idMap[g] or nil
+                elseif e.group ~= nil and not FlashCD.GetGroupByID(e.group) then
+                    e.group = nil   -- its group is gone: the first group
+                end
+            end
+        end
+    end
+
+    if loadingSpells then
         local haveMap = next(idMap) ~= nil
         db.spells = {}
         for key, e in pairs(data.spells) do
@@ -1362,6 +1457,73 @@ function FlashCD.ApplyProfile(data, withSpells)
     return true
 end
 
+function FlashCD.ApplyProfile(data, withSpells)
+    return WithUndo(ApplyProfileNow, data, withSpells)
+end
+
+function FlashCD.CanUndo() return undo ~= nil end
+
+-- Put back the settings from before the last preset, import, copy or fresh start
+function FlashCD.Undo()
+    if not undo then return false end
+    local u = undo
+    undo = nil
+    inChange = true
+    local ok, err = pcall(ApplyProfileNow, u.data, true)
+    inChange = false
+    local db = FlashCD.db
+    db.known, db.skippedNoCD = u.known, u.skippedNoCD
+    if not ok then error(err, 0) end
+    return true
+end
+
+-- Every profile: this character's (by name), your other characters', and
+-- the copies you saved. { {key, label, name, kind = "me"|"char"|"copy"}, ... }
+function FlashCD.ProfileList()
+    local me = FlashCD.CharKey()
+    local list = { { key = "char:" .. me, name = me, kind = "me", label = me .. " (this character)" } }
+    for _, c in ipairs(FlashCD.Characters()) do
+        list[#list + 1] = { key = "char:" .. c.key, name = c.key, kind = "char", label = c.label }
+    end
+    local copies = {}
+    for name in pairs(FlashCDDB.profiles or {}) do copies[#copies + 1] = name end
+    table.sort(copies)
+    for _, name in ipairs(copies) do
+        list[#list + 1] = { key = "copy:" .. name, name = name, kind = "copy", label = name }
+    end
+    return list
+end
+
+-- Load a profile from the list onto this character
+function FlashCD.LoadProfile(key, withSpells)
+    local kind, name = tostring(key):match("^(%a+):(.+)$")
+    if kind == "char" then
+        if name == FlashCD.CharKey() then return false end   -- that's this one
+        return FlashCD.CopyFromCharacter(name, withSpells)
+    elseif kind == "copy" then
+        return FlashCD.ApplyProfile(FlashCDDB.profiles[name], withSpells)
+    end
+    return false
+end
+
+-- Save this character's settings (and tracked spells) as a named copy;
+-- returns false and a reason when the name won't do
+function FlashCD.SaveProfileCopy(name)
+    name = type(name) == "string" and name:match("^%s*(.-)%s*$") or ""
+    if name == "" then return false, "Type a name for the copy." end
+    if #name > 40 then return false, "That name is too long." end
+    local data = FlashCD.ProfileData()
+    data.class = UnitClass and (UnitClass("player"))
+    FlashCDDB.profiles[name] = data
+    return true
+end
+
+function FlashCD.DeleteProfileCopy(name)
+    if FlashCDDB.profiles[name] == nil then return false end
+    FlashCDDB.profiles[name] = nil
+    return true
+end
+
 function FlashCD.CopyFromCharacter(key, withSpells)
     local data = FlashCDDB.chars and FlashCDDB.chars[key]
     return FlashCD.ApplyProfile(data, withSpells)
@@ -1371,7 +1533,7 @@ end
 -- one default group. With withSpells, the tracked spells start over too (the
 -- spellbook is auto-tracked again). Learned cooldowns and the window's place
 -- are kept.
-function FlashCD.ResetToFresh(withSpells)
+local function ResetToFreshNow(withSpells)
     local db = FlashCD.db
     for _, k in ipairs(TEMPLATE_KEYS) do db[k] = CopyTable(DEFAULTS[k]) end
     db.groups, db.nextGroup = nil, nil
@@ -1389,6 +1551,10 @@ function FlashCD.ResetToFresh(withSpells)
     FlashCD.ResetState()
     if FlashCD.UpdateMinimapButton then FlashCD.UpdateMinimapButton() end
     if FlashCD.OnProfileApplied then FlashCD.OnProfileApplied() end
+end
+
+function FlashCD.ResetToFresh(withSpells)
+    return WithUndo(ResetToFreshNow, withSpells)
 end
 
 -- Built-in looks to start from. A preset replaces the groups (look, layout,
@@ -1473,7 +1639,7 @@ function FlashCD.PreviewPreset(key)
 end
 
 -- Use a preset. With freshSpells, the tracked spells start over too.
-function FlashCD.ApplyPreset(key, freshSpells)
+local function ApplyPresetNow(key, freshSpells)
     local p = FlashCD.GetPreset(key)
     if not p then return false end
     if key == "default" then
@@ -1504,6 +1670,11 @@ function FlashCD.ApplyPreset(key, freshSpells)
         data.settings.sound = p.sound
     end
     return FlashCD.ApplyProfile(data, false)
+end
+
+function FlashCD.ApplyPreset(key, freshSpells)
+    if not FlashCD.GetPreset(key) then return false end
+    return WithUndo(ApplyPresetNow, key, freshSpells)
 end
 
 -- Text form: "FlashCD:1:" followed by a Lua-like table of strings, numbers,
